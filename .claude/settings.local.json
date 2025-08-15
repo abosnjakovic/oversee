@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__Context7__resolve-library-id",
+      "mcp__serena__read_file",
+      "WebSearch"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
