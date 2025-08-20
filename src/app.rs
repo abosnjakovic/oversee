@@ -1,4 +1,4 @@
-use crate::{cpu::CpuMonitor, process::ProcessMonitor};
+use crate::{cpu::CpuMonitor, gpu::GpuMonitor, process::ProcessMonitor};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
@@ -14,15 +14,6 @@ pub enum TimelineScope {
 }
 
 impl TimelineScope {
-    pub fn duration_secs(self) -> usize {
-        match self {
-            TimelineScope::Seconds30 => 30,
-            TimelineScope::Seconds60 => 60,
-            TimelineScope::Seconds120 => 120,
-            TimelineScope::Seconds300 => 300,
-        }
-    }
-    
     pub fn name(self) -> &'static str {
         match self {
             TimelineScope::Seconds30 => "30s",
@@ -56,6 +47,10 @@ pub struct App {
     pub cpu_monitor: CpuMonitor,
     pub process_monitor: ProcessMonitor,
     pub cpu_core_histories: Vec<VecDeque<f32>>,
+    pub gpu_monitor: GpuMonitor,
+    pub gpu_core_histories: Vec<VecDeque<f32>>,
+    pub gpu_overall_history: VecDeque<f32>,
+    pub gpu_visible: bool,
     pub selected_process: usize,
     pub running: bool,
     pub paused: bool,
@@ -68,11 +63,17 @@ impl App {
     pub fn new() -> Self {
         let cpu_monitor = CpuMonitor::new();
         let cpu_count = cpu_monitor.cpu_count();
+        let gpu_monitor = GpuMonitor::new();
+        let gpu_core_count = gpu_monitor.get_core_count();
         
         let mut app = App {
             cpu_monitor,
             process_monitor: ProcessMonitor::new(),
             cpu_core_histories: (0..cpu_count).map(|_| VecDeque::with_capacity(MAX_CPU_HISTORY)).collect(),
+            gpu_monitor,
+            gpu_core_histories: (0..gpu_core_count).map(|_| VecDeque::with_capacity(MAX_CPU_HISTORY)).collect(),
+            gpu_overall_history: VecDeque::with_capacity(MAX_CPU_HISTORY),
+            gpu_visible: true, // Show GPU by default if available
             selected_process: 0,
             running: true,
             paused: false,
@@ -83,6 +84,7 @@ impl App {
         
         // Initialize with some data
         app.update_cpu_data();
+        app.update_gpu_data();
         app.update_process_data();
         
         app
@@ -94,6 +96,7 @@ impl App {
         // Update CPU data every 1 second for timeline
         if now.duration_since(self.last_cpu_update) >= Duration::from_secs(1) {
             self.update_cpu_data();
+            self.update_gpu_data();
             self.last_cpu_update = now;
         }
         
@@ -117,6 +120,29 @@ impl App {
                     // Keep only the last MAX_CPU_HISTORY points
                     if self.cpu_core_histories[i].len() > MAX_CPU_HISTORY {
                         self.cpu_core_histories[i].pop_front();
+                    }
+                }
+            }
+        }
+    }
+    
+    fn update_gpu_data(&mut self) {
+        if !self.paused {
+            self.gpu_monitor.refresh();
+            let gpu_info = self.gpu_monitor.get_info();
+            
+            // Update overall GPU utilization history
+            self.gpu_overall_history.push_back(gpu_info.overall_utilization);
+            if self.gpu_overall_history.len() > MAX_CPU_HISTORY {
+                self.gpu_overall_history.pop_front();
+            }
+            
+            // Update individual GPU core histories
+            for (i, core) in gpu_info.cores.iter().enumerate() {
+                if i < self.gpu_core_histories.len() {
+                    self.gpu_core_histories[i].push_back(core.utilization);
+                    if self.gpu_core_histories[i].len() > MAX_CPU_HISTORY {
+                        self.gpu_core_histories[i].pop_front();
                     }
                 }
             }
@@ -160,6 +186,9 @@ impl App {
             }
             KeyCode::Char('-') => {
                 self.timeline_scope = self.timeline_scope.prev();
+            }
+            KeyCode::Char('v') => {
+                self.gpu_visible = !self.gpu_visible;
             }
             // Vim-style navigation
             KeyCode::Char('k') | KeyCode::Up => {
@@ -205,66 +234,8 @@ impl App {
         }
     }
     
-    pub fn get_cpu_timeline_data(&self, bar_width: usize) -> Vec<Vec<u8>> {
-        let scope_duration = self.timeline_scope.duration_secs();
-        let slice_duration = scope_duration as f32 / bar_width as f32;
-        
-        self.cpu_core_histories
-            .iter()
-            .map(|core_history| {
-                let mut timeline = Vec::with_capacity(bar_width);
-                
-                for i in 0..bar_width {
-                    let start_idx = (i as f32 * slice_duration) as usize;
-                    let end_idx = ((i + 1) as f32 * slice_duration) as usize;
-                    
-                    // Calculate average usage for this time slice
-                    let slice_usage = if start_idx < core_history.len() {
-                        let actual_end = end_idx.min(core_history.len());
-                        let slice: Vec<f32> = core_history
-                            .range(start_idx..actual_end)
-                            .copied()
-                            .collect();
-                        
-                        if slice.is_empty() {
-                            0.0
-                        } else {
-                            slice.iter().sum::<f32>() / slice.len() as f32
-                        }
-                    } else {
-                        0.0
-                    };
-                    
-                    // Convert to block character intensity (0-7)
-                    let intensity = if slice_usage >= 80.0 {
-                        7 // █
-                    } else if slice_usage >= 60.0 {
-                        6 // ▉
-                    } else if slice_usage >= 40.0 {
-                        5 // ▊
-                    } else if slice_usage >= 20.0 {
-                        4 // ▋
-                    } else if slice_usage >= 10.0 {
-                        3 // ▌
-                    } else if slice_usage >= 5.0 {
-                        2 // ▍
-                    } else if slice_usage >= 1.0 {
-                        1 // ▎
-                    } else {
-                        0 // ░
-                    };
-                    
-                    timeline.push(intensity);
-                }
-                
-                timeline
-            })
-            .collect()
-    }
     
-    pub fn get_current_cpu_usage(&self) -> f32 {
-        self.cpu_monitor.global_cpu_usage()
-    }
+    
     
     pub fn get_cpu_count(&self) -> usize {
         self.cpu_monitor.cpu_count()
@@ -285,6 +256,15 @@ impl App {
     pub fn get_timeline_scope(&self) -> TimelineScope {
         self.timeline_scope
     }
+    
+    pub fn is_gpu_visible(&self) -> bool {
+        self.gpu_visible && self.gpu_monitor.is_available()
+    }
+    
+    pub fn get_gpu_monitor(&self) -> &GpuMonitor {
+        &self.gpu_monitor
+    }
+    
 }
 
 impl Default for App {

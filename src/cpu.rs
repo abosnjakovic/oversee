@@ -1,6 +1,5 @@
 use sysinfo::{CpuRefreshKind, RefreshKind, System};
 use std::thread;
-use std::time::Duration;
 
 #[derive(Debug)]
 pub struct CpuMonitor {
@@ -29,9 +28,6 @@ impl CpuMonitor {
         self.system.refresh_cpu_usage();
     }
     
-    pub fn global_cpu_usage(&self) -> f32 {
-        self.system.global_cpu_usage()
-    }
     
     pub fn cpu_count(&self) -> usize {
         self.system.cpus().len()
@@ -47,18 +43,6 @@ impl CpuMonitor {
             .collect()
     }
     
-    pub fn stream_cpu_data<F>(&mut self, interval_ms: u64, mut callback: F)
-    where
-        F: FnMut(&CpuMonitor),
-    {
-        let interval = Duration::from_millis(interval_ms.max(200)); // Ensure minimum interval
-        
-        loop {
-            self.refresh();
-            callback(self);
-            thread::sleep(interval);
-        }
-    }
 }
 
 impl Default for CpuMonitor {

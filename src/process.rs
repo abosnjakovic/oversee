@@ -26,14 +26,6 @@ impl SortMode {
         }
     }
     
-    pub fn name(self) -> &'static str {
-        match self {
-            SortMode::Cpu => "CPU%",
-            SortMode::Memory => "Memory",
-            SortMode::Name => "Name",
-            SortMode::Pid => "PID",
-        }
-    }
 }
 
 #[derive(Debug)]
@@ -114,35 +106,13 @@ impl ProcessMonitor {
         &self.processes
     }
     
-    pub fn set_sort_mode(&mut self, mode: SortMode) {
-        self.sort_mode = mode;
-        self.sort_processes();
-    }
     
     pub fn next_sort_mode(&mut self) {
         self.sort_mode = self.sort_mode.next();
         self.sort_processes();
     }
     
-    pub fn current_sort_mode(&self) -> SortMode {
-        self.sort_mode
-    }
     
-    pub fn format_memory(bytes: u64) -> String {
-        const GB: u64 = 1024 * 1024 * 1024;
-        const MB: u64 = 1024 * 1024;
-        const KB: u64 = 1024;
-        
-        if bytes >= GB {
-            format!("{:.1} GB", bytes as f64 / GB as f64)
-        } else if bytes >= MB {
-            format!("{:.1} MB", bytes as f64 / MB as f64)
-        } else if bytes >= KB {
-            format!("{:.1} KB", bytes as f64 / KB as f64)
-        } else {
-            format!("{} B", bytes)
-        }
-    }
 }
 
 impl Default for ProcessMonitor {
