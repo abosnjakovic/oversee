@@ -7,6 +7,8 @@ mod ui;
 
 use app::App;
 use std::error::Error;
+use std::time::{Duration, Instant};
+use std::thread;
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Initialize terminal
@@ -15,16 +17,29 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Create app
     let mut app = App::new();
     
+    // Frame rate limiting - target 40 FPS for responsive navigation (25ms per frame)
+    const TARGET_FRAME_TIME: Duration = Duration::from_millis(25);
+    
     // Main event loop
     while app.is_running() {
-        // Update app state
-        app.tick();
+        let frame_start = Instant::now();
         
-        // Handle events
-        app.handle_event()?;
+        // Update app state and check if render needed
+        let data_changed = app.tick();
         
-        // Render UI
-        terminal.draw(|f| ui::render(f, &app))?;
+        // Handle events and check if render needed
+        let event_occurred = app.handle_event()?;
+        
+        // Only render if something changed
+        if data_changed || event_occurred {
+            terminal.draw(|f| ui::render(f, &mut app))?;
+        }
+        
+        // Always sleep for the remaining frame time to avoid busy loop
+        let elapsed = frame_start.elapsed();
+        if elapsed < TARGET_FRAME_TIME {
+            thread::sleep(TARGET_FRAME_TIME - elapsed);
+        }
     }
     
     Ok(())

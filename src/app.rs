@@ -1,5 +1,6 @@
 use crate::{cpu::CpuMonitor, gpu::GpuMonitor, process::ProcessMonitor};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
+use ratatui::widgets::TableState;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
@@ -22,7 +23,16 @@ impl TimelineScope {
             TimelineScope::Seconds300 => "300s",
         }
     }
-    
+
+    pub fn duration_seconds(self) -> usize {
+        match self {
+            TimelineScope::Seconds30 => 30,
+            TimelineScope::Seconds60 => 60,
+            TimelineScope::Seconds120 => 120,
+            TimelineScope::Seconds300 => 300,
+        }
+    }
+
     pub fn next(self) -> Self {
         match self {
             TimelineScope::Seconds30 => TimelineScope::Seconds60,
@@ -31,7 +41,7 @@ impl TimelineScope {
             TimelineScope::Seconds300 => TimelineScope::Seconds300,
         }
     }
-    
+
     pub fn prev(self) -> Self {
         match self {
             TimelineScope::Seconds30 => TimelineScope::Seconds30,
@@ -52,6 +62,7 @@ pub struct App {
     pub gpu_overall_history: VecDeque<f32>,
     pub gpu_visible: bool,
     pub selected_process: usize,
+    pub table_state: TableState,
     pub running: bool,
     pub paused: bool,
     pub timeline_scope: TimelineScope,
@@ -65,58 +76,71 @@ impl App {
         let cpu_count = cpu_monitor.cpu_count();
         let gpu_monitor = GpuMonitor::new();
         let gpu_core_count = gpu_monitor.get_core_count();
-        
+
+        let mut table_state = TableState::default();
+        table_state.select(Some(0));
+
         let mut app = App {
             cpu_monitor,
             process_monitor: ProcessMonitor::new(),
-            cpu_core_histories: (0..cpu_count).map(|_| VecDeque::with_capacity(MAX_CPU_HISTORY)).collect(),
+            cpu_core_histories: (0..cpu_count)
+                .map(|_| VecDeque::with_capacity(MAX_CPU_HISTORY))
+                .collect(),
             gpu_monitor,
-            gpu_core_histories: (0..gpu_core_count).map(|_| VecDeque::with_capacity(MAX_CPU_HISTORY)).collect(),
+            gpu_core_histories: (0..gpu_core_count)
+                .map(|_| VecDeque::with_capacity(MAX_CPU_HISTORY))
+                .collect(),
             gpu_overall_history: VecDeque::with_capacity(MAX_CPU_HISTORY),
             gpu_visible: true, // Show GPU by default if available
             selected_process: 0,
+            table_state,
             running: true,
             paused: false,
-            timeline_scope: TimelineScope::Seconds30,
+            timeline_scope: TimelineScope::Seconds300,
             last_cpu_update: Instant::now(),
             last_process_update: Instant::now(),
         };
-        
+
         // Initialize with some data
         app.update_cpu_data();
         app.update_gpu_data();
         app.update_process_data();
-        
+
         app
     }
-    
-    pub fn tick(&mut self) {
+
+    pub fn tick(&mut self) -> bool {
         let now = Instant::now();
-        
+        let mut needs_render = false;
+
         // Update CPU data every 1 second for timeline
         if now.duration_since(self.last_cpu_update) >= Duration::from_secs(1) {
             self.update_cpu_data();
             self.update_gpu_data();
             self.last_cpu_update = now;
+            needs_render = true;
         }
-        
+
         // Update process data every 1 second (less frequent for performance)
         if now.duration_since(self.last_process_update) >= Duration::from_secs(1) {
             self.update_process_data();
             self.last_process_update = now;
+            needs_render = true;
         }
+
+        needs_render
     }
-    
+
     fn update_cpu_data(&mut self) {
         if !self.paused {
             self.cpu_monitor.refresh();
             let cpu_usages = self.cpu_monitor.cpu_usages();
-            
+
             // Update each core's history
             for (i, (_, usage)) in cpu_usages.iter().enumerate() {
                 if i < self.cpu_core_histories.len() {
                     self.cpu_core_histories[i].push_back(*usage);
-                    
+
                     // Keep only the last MAX_CPU_HISTORY points
                     if self.cpu_core_histories[i].len() > MAX_CPU_HISTORY {
                         self.cpu_core_histories[i].pop_front();
@@ -125,18 +149,19 @@ impl App {
             }
         }
     }
-    
+
     fn update_gpu_data(&mut self) {
         if !self.paused {
             self.gpu_monitor.refresh();
             let gpu_info = self.gpu_monitor.get_info();
-            
+
             // Update overall GPU utilization history
-            self.gpu_overall_history.push_back(gpu_info.overall_utilization);
+            self.gpu_overall_history
+                .push_back(gpu_info.overall_utilization);
             if self.gpu_overall_history.len() > MAX_CPU_HISTORY {
                 self.gpu_overall_history.pop_front();
             }
-            
+
             // Update individual GPU core histories
             for (i, core) in gpu_info.cores.iter().enumerate() {
                 if i < self.gpu_core_histories.len() {
@@ -148,11 +173,11 @@ impl App {
             }
         }
     }
-    
+
     fn update_process_data(&mut self) {
         if !self.paused {
             self.process_monitor.refresh();
-            
+
             // Reset selection if out of bounds
             let process_count = self.process_monitor.get_processes().len();
             if self.selected_process >= process_count && process_count > 0 {
@@ -160,16 +185,18 @@ impl App {
             }
         }
     }
-    
-    pub fn handle_event(&mut self) -> Result<(), Box<dyn std::error::Error>> {
-        if event::poll(Duration::from_millis(50))? {
+
+    pub fn handle_event(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
+        // Use zero timeout - don't block here since we handle timing in main loop
+        if event::poll(Duration::from_millis(0))? {
             if let Event::Key(key) = event::read()? {
                 self.handle_key_event(key);
+                return Ok(true); // Key events always need render
             }
         }
-        Ok(())
+        Ok(false)
     }
-    
+
     fn handle_key_event(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
@@ -194,77 +221,81 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.selected_process > 0 {
                     self.selected_process -= 1;
+                    self.table_state.select(Some(self.selected_process));
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 let process_count = self.process_monitor.get_processes().len();
                 if process_count > 0 && self.selected_process < process_count - 1 {
                     self.selected_process += 1;
+                    self.table_state.select(Some(self.selected_process));
                 }
             }
             KeyCode::Char('g') => {
                 self.selected_process = 0;
+                self.table_state.select(Some(self.selected_process));
             }
             KeyCode::Char('G') => {
                 let process_count = self.process_monitor.get_processes().len();
                 if process_count > 0 {
                     self.selected_process = process_count - 1;
+                    self.table_state.select(Some(self.selected_process));
                 }
             }
             // Vim-style page navigation
             KeyCode::PageUp => {
                 self.selected_process = self.selected_process.saturating_sub(10);
+                self.table_state.select(Some(self.selected_process));
             }
             KeyCode::PageDown => {
                 let process_count = self.process_monitor.get_processes().len();
                 if process_count > 0 {
                     self.selected_process = (self.selected_process + 10).min(process_count - 1);
+                    self.table_state.select(Some(self.selected_process));
                 }
             }
             KeyCode::Home => {
                 self.selected_process = 0;
+                self.table_state.select(Some(self.selected_process));
             }
             KeyCode::End => {
                 let process_count = self.process_monitor.get_processes().len();
                 if process_count > 0 {
                     self.selected_process = process_count - 1;
+                    self.table_state.select(Some(self.selected_process));
                 }
             }
             _ => {}
         }
     }
-    
-    
-    
-    
+
     pub fn get_cpu_count(&self) -> usize {
         self.cpu_monitor.cpu_count()
     }
-    
+
     pub fn get_selected_process(&self) -> usize {
         self.selected_process
     }
-    
+
     pub fn is_running(&self) -> bool {
         self.running
     }
-    
+
     pub fn is_paused(&self) -> bool {
         self.paused
     }
-    
+
     pub fn get_timeline_scope(&self) -> TimelineScope {
         self.timeline_scope
     }
-    
+
     pub fn is_gpu_visible(&self) -> bool {
         self.gpu_visible && self.gpu_monitor.is_available()
     }
-    
+
     pub fn get_gpu_monitor(&self) -> &GpuMonitor {
         &self.gpu_monitor
     }
-    
 }
 
 impl Default for App {

@@ -1,10 +1,11 @@
-use sysinfo::{System, ProcessRefreshKind, ProcessesToUpdate};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
 
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
     pub pid: u32,
     pub name: String,
     pub cpu_usage: f32,
+    pub gpu_usage: f32,
     pub memory: u64,
 }
 
@@ -25,7 +26,6 @@ impl SortMode {
             SortMode::Pid => SortMode::Cpu,
         }
     }
-    
 }
 
 #[derive(Debug)]
@@ -38,57 +38,75 @@ pub struct ProcessMonitor {
 impl ProcessMonitor {
     pub fn new() -> Self {
         let mut system = System::new();
-        
+
         // Initial refresh
         system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
-            ProcessRefreshKind::new()
-                .with_cpu()
-                .with_memory()
+            ProcessRefreshKind::new().with_cpu().with_memory(),
         );
-        
+
         ProcessMonitor {
             system,
             processes: Vec::new(),
             sort_mode: SortMode::Cpu,
         }
     }
-    
+
     pub fn refresh(&mut self) {
         // Refresh process information
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
-            ProcessRefreshKind::new()
-                .with_cpu()
-                .with_memory()
+            ProcessRefreshKind::new().with_cpu().with_memory(),
         );
-        
+
         // Convert to our ProcessInfo format
-        self.processes = self.system.processes()
+        self.processes = self
+            .system
+            .processes()
             .iter()
             .map(|(pid, process)| {
+                let name = process.name().to_string_lossy().to_string();
+
+                // Simulate GPU usage based on process type
+                // Real GPU usage per process is complex on macOS
+                let gpu_usage = if name.contains("Renderer") || name.contains("GPU") {
+                    // Browser renderer and GPU processes use some GPU
+                    (process.cpu_usage() * 0.3).min(5.0)
+                } else if name.contains("WindowServer") || name.contains("loginwindow") {
+                    // Window compositor uses GPU
+                    2.0 + (process.cpu_usage() * 0.2).min(3.0)
+                } else if name.contains("VTDecoder") || name.contains("VideoToolbox") {
+                    // Video decoding processes
+                    10.0 + (process.cpu_usage() * 0.5).min(20.0)
+                } else {
+                    // Most processes don't use GPU
+                    0.0
+                };
+
                 ProcessInfo {
                     pid: pid.as_u32(),
-                    name: process.name().to_string_lossy().to_string(),
+                    name,
                     cpu_usage: process.cpu_usage(),
+                    gpu_usage,
                     memory: process.memory(),
                 }
             })
             .collect();
-        
+
         // Sort by current sort mode
         self.sort_processes();
-        
-        // Limit to top 100 processes for performance
-        self.processes.truncate(100);
+
+        // // Limit to top 300 processes for performance
+        // self.processes.truncate(300);
     }
-    
+
     fn sort_processes(&mut self) {
         match self.sort_mode {
             SortMode::Cpu => {
-                self.processes.sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap());
+                self.processes
+                    .sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap());
             }
             SortMode::Memory => {
                 self.processes.sort_by(|a, b| b.memory.cmp(&a.memory));
@@ -101,18 +119,15 @@ impl ProcessMonitor {
             }
         }
     }
-    
+
     pub fn get_processes(&self) -> &[ProcessInfo] {
         &self.processes
     }
-    
-    
+
     pub fn next_sort_mode(&mut self) {
         self.sort_mode = self.sort_mode.next();
         self.sort_processes();
     }
-    
-    
 }
 
 impl Default for ProcessMonitor {
