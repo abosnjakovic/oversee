@@ -1,9 +1,10 @@
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
 
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
     pub pid: u32,
     pub name: String,
+    pub user: String,
     pub cpu_usage: f32,
     pub gpu_usage: f32,
     pub memory: u64,
@@ -31,6 +32,7 @@ impl SortMode {
 #[derive(Debug)]
 pub struct ProcessMonitor {
     system: System,
+    users: Users,
     processes: Vec<ProcessInfo>,
     sort_mode: SortMode,
 }
@@ -43,11 +45,15 @@ impl ProcessMonitor {
         system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
-            ProcessRefreshKind::new().with_cpu().with_memory(),
+            ProcessRefreshKind::new().with_cpu().with_memory().with_user(UpdateKind::Always),
         );
+
+        // Initialize users list
+        let users = Users::new_with_refreshed_list();
 
         ProcessMonitor {
             system,
+            users,
             processes: Vec::new(),
             sort_mode: SortMode::Cpu,
         }
@@ -58,7 +64,7 @@ impl ProcessMonitor {
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
-            ProcessRefreshKind::new().with_cpu().with_memory(),
+            ProcessRefreshKind::new().with_cpu().with_memory().with_user(UpdateKind::Always),
         );
 
         // Convert to our ProcessInfo format
@@ -68,6 +74,19 @@ impl ProcessMonitor {
             .iter()
             .map(|(pid, process)| {
                 let name = process.name().to_string_lossy().to_string();
+
+                // Get username from UID
+                let user = if let Some(uid) = process.user_id() {
+                    if let Some(user) = self.users.get_user_by_id(uid) {
+                        user.name().to_string()
+                    } else {
+                        // Fallback to numeric UID if user not found
+                        format!("{:?}", uid)
+                    }
+                } else {
+                    // No UID available
+                    "unknown".to_string()
+                };
 
                 // Simulate GPU usage based on process type
                 // Real GPU usage per process is complex on macOS
@@ -88,6 +107,7 @@ impl ProcessMonitor {
                 ProcessInfo {
                     pid: pid.as_u32(),
                     name,
+                    user,
                     cpu_usage: process.cpu_usage(),
                     gpu_usage,
                     memory: process.memory(),

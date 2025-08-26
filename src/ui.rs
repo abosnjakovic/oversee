@@ -83,7 +83,7 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
 
             Row::new(vec![
                 proc.pid.to_string(),
-                "user".to_string(), // Simplified - sysinfo doesn't easily provide user
+                truncate_string(&proc.user, 8), // Truncate username to fit column
                 format!("{:.1}", proc.cpu_usage),
                 format!("{:.1}", proc.gpu_usage),
                 format!("{:.0}", mem_mb),
