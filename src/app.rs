@@ -1,4 +1,4 @@
-use crate::{cpu::CpuMonitor, gpu::GpuMonitor, process::ProcessMonitor};
+use crate::{cpu::CpuMonitor, gpu::GpuMonitor, memory::MemoryMonitor, process::ProcessMonitor};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
 use std::collections::VecDeque;
@@ -60,14 +60,22 @@ pub struct App {
     pub gpu_monitor: GpuMonitor,
     pub gpu_core_histories: Vec<VecDeque<f32>>,
     pub gpu_overall_history: VecDeque<f32>,
+    pub memory_monitor: MemoryMonitor,
     pub gpu_visible: bool,
     pub selected_process: usize,
     pub table_state: TableState,
     pub running: bool,
     pub paused: bool,
     pub timeline_scope: TimelineScope,
+    pub filter_mode: bool,
+    pub filter_input: String,
+    pub filtered_indices: Vec<usize>,
+    pub kill_confirmation_mode: bool,
+    pub kill_target_pid: Option<u32>,
+    pub kill_target_name: String,
     last_cpu_update: Instant,
     last_process_update: Instant,
+    last_memory_update: Instant,
 }
 
 impl App {
@@ -91,19 +99,28 @@ impl App {
                 .map(|_| VecDeque::with_capacity(MAX_CPU_HISTORY))
                 .collect(),
             gpu_overall_history: VecDeque::with_capacity(MAX_CPU_HISTORY),
+            memory_monitor: MemoryMonitor::new(),
             gpu_visible: true, // Show GPU by default if available
             selected_process: 0,
             table_state,
             running: true,
             paused: false,
             timeline_scope: TimelineScope::Seconds300,
+            filter_mode: false,
+            filter_input: String::new(),
+            filtered_indices: Vec::new(),
+            kill_confirmation_mode: false,
+            kill_target_pid: None,
+            kill_target_name: String::new(),
             last_cpu_update: Instant::now(),
             last_process_update: Instant::now(),
+            last_memory_update: Instant::now(),
         };
 
         // Initialize with some data
         app.update_cpu_data();
         app.update_gpu_data();
+        app.update_memory_data();
         app.update_process_data();
 
         app
@@ -118,6 +135,13 @@ impl App {
             self.update_cpu_data();
             self.update_gpu_data();
             self.last_cpu_update = now;
+            needs_render = true;
+        }
+
+        // Update memory data every 1 second
+        if now.duration_since(self.last_memory_update) >= Duration::from_secs(1) {
+            self.update_memory_data();
+            self.last_memory_update = now;
             needs_render = true;
         }
 
@@ -174,6 +198,12 @@ impl App {
         }
     }
 
+    fn update_memory_data(&mut self) {
+        if !self.paused {
+            self.memory_monitor.refresh();
+        }
+    }
+
     fn update_process_data(&mut self) {
         if !self.paused {
             self.process_monitor.refresh();
@@ -198,9 +228,66 @@ impl App {
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) {
+        // Handle kill confirmation mode
+        if self.kill_confirmation_mode {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    // Confirm kill
+                    if let Some(pid) = self.kill_target_pid {
+                        self.kill_process(pid);
+                    }
+                    self.kill_confirmation_mode = false;
+                    self.kill_target_pid = None;
+                    self.kill_target_name.clear();
+                }
+                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                    // Cancel kill
+                    self.kill_confirmation_mode = false;
+                    self.kill_target_pid = None;
+                    self.kill_target_name.clear();
+                }
+                _ => {}
+            }
+            return;
+        }
+        
+        // Handle filter mode input separately
+        if self.filter_mode {
+            match key.code {
+                KeyCode::Esc => {
+                    // Cancel filter mode and clear filter
+                    self.filter_mode = false;
+                    self.filter_input.clear();
+                    self.update_filtered_indices();
+                }
+                KeyCode::Enter => {
+                    // Apply filter and exit filter mode
+                    self.filter_mode = false;
+                    self.update_filtered_indices();
+                }
+                KeyCode::Backspace => {
+                    // Remove last character from filter
+                    self.filter_input.pop();
+                    self.update_filtered_indices();
+                }
+                KeyCode::Char(c) => {
+                    // Add character to filter
+                    self.filter_input.push(c);
+                    self.update_filtered_indices();
+                }
+                _ => {}
+            }
+            return;
+        }
+        
+        // Normal mode key handling
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.running = false;
+            }
+            KeyCode::Char('/') => {
+                // Enter filter mode
+                self.filter_mode = true;
             }
             KeyCode::Char(' ') => {
                 self.paused = !self.paused;
@@ -217,6 +304,17 @@ impl App {
             KeyCode::Char('v') => {
                 self.gpu_visible = !self.gpu_visible;
             }
+            KeyCode::Char('K') => {
+                // Enter kill confirmation mode for selected process
+                let processes = self.get_filtered_processes();
+                if !processes.is_empty() && self.selected_process < processes.len() {
+                    let pid = processes[self.selected_process].pid;
+                    let name = processes[self.selected_process].name.clone();
+                    self.kill_confirmation_mode = true;
+                    self.kill_target_pid = Some(pid);
+                    self.kill_target_name = name;
+                }
+            }
             // Vim-style navigation
             KeyCode::Char('k') | KeyCode::Up => {
                 if self.selected_process > 0 {
@@ -225,7 +323,7 @@ impl App {
                 }
             }
             KeyCode::Char('j') | KeyCode::Down => {
-                let process_count = self.process_monitor.get_processes().len();
+                let process_count = self.get_filtered_processes().len();
                 if process_count > 0 && self.selected_process < process_count - 1 {
                     self.selected_process += 1;
                     self.table_state.select(Some(self.selected_process));
@@ -236,7 +334,7 @@ impl App {
                 self.table_state.select(Some(self.selected_process));
             }
             KeyCode::Char('G') => {
-                let process_count = self.process_monitor.get_processes().len();
+                let process_count = self.get_filtered_processes().len();
                 if process_count > 0 {
                     self.selected_process = process_count - 1;
                     self.table_state.select(Some(self.selected_process));
@@ -248,7 +346,7 @@ impl App {
                 self.table_state.select(Some(self.selected_process));
             }
             KeyCode::PageDown => {
-                let process_count = self.process_monitor.get_processes().len();
+                let process_count = self.get_filtered_processes().len();
                 if process_count > 0 {
                     self.selected_process = (self.selected_process + 10).min(process_count - 1);
                     self.table_state.select(Some(self.selected_process));
@@ -259,7 +357,7 @@ impl App {
                 self.table_state.select(Some(self.selected_process));
             }
             KeyCode::End => {
-                let process_count = self.process_monitor.get_processes().len();
+                let process_count = self.get_filtered_processes().len();
                 if process_count > 0 {
                     self.selected_process = process_count - 1;
                     self.table_state.select(Some(self.selected_process));
@@ -295,6 +393,57 @@ impl App {
 
     pub fn get_gpu_monitor(&self) -> &GpuMonitor {
         &self.gpu_monitor
+    }
+    
+    fn kill_process(&self, pid: u32) {
+        unsafe {
+            // Use SIGTERM (15) first for graceful shutdown
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+    }
+    
+    pub fn update_filtered_indices(&mut self) {
+        if self.filter_input.is_empty() {
+            // No filter, show all processes
+            self.filtered_indices.clear();
+        } else {
+            // Filter processes by name (case-insensitive)
+            let filter_lower = self.filter_input.to_lowercase();
+            self.filtered_indices = self.process_monitor
+                .get_processes()
+                .iter()
+                .enumerate()
+                .filter(|(_, proc)| {
+                    proc.name.to_lowercase().contains(&filter_lower) ||
+                    proc.user.to_lowercase().contains(&filter_lower)
+                })
+                .map(|(i, _)| i)
+                .collect();
+        }
+        
+        // Reset selection if it's out of bounds
+        if !self.filtered_indices.is_empty() {
+            if self.selected_process >= self.filtered_indices.len() {
+                self.selected_process = 0;
+                self.table_state.select(Some(0));
+            }
+        }
+    }
+    
+    pub fn get_filtered_processes(&self) -> Vec<&crate::process::ProcessInfo> {
+        if self.filtered_indices.is_empty() && !self.filter_input.is_empty() {
+            // Filter active but no matches
+            Vec::new()
+        } else if self.filtered_indices.is_empty() {
+            // No filter active, return all
+            self.process_monitor.get_processes().iter().collect()
+        } else {
+            // Return filtered processes
+            self.filtered_indices
+                .iter()
+                .filter_map(|&i| self.process_monitor.get_processes().get(i))
+                .collect()
+        }
     }
 }
 

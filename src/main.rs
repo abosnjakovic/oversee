@@ -1,6 +1,7 @@
 mod app;
 mod cpu;
 mod gpu;
+mod memory;
 mod process;
 mod tui;
 mod ui;

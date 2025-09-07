@@ -1,4 +1,6 @@
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
+use std::ffi::CStr;
+use std::mem;
 
 #[derive(Debug, Clone)]
 pub struct ProcessInfo {
@@ -77,11 +79,19 @@ impl ProcessMonitor {
 
                 // Get username from UID
                 let user = if let Some(uid) = process.user_id() {
+                    // First try sysinfo's user database
                     if let Some(user) = self.users.get_user_by_id(uid) {
                         user.name().to_string()
                     } else {
-                        // Fallback to numeric UID if user not found
-                        format!("{:?}", uid)
+                        // Try libc fallback for system users
+                        // Convert Uid to u32 - dereference the Uid wrapper
+                        let uid_value = **uid;
+                        if let Some(username) = get_username_from_uid(uid_value) {
+                            username
+                        } else {
+                            // Last resort: show numeric UID
+                            uid_value.to_string()
+                        }
                     }
                 } else {
                     // No UID available
@@ -154,4 +164,36 @@ impl Default for ProcessMonitor {
     fn default() -> Self {
         Self::new()
     }
+}
+
+// Fallback function to get username from UID using libc
+#[cfg(target_os = "macos")]
+fn get_username_from_uid(uid: u32) -> Option<String> {
+    unsafe {
+        let mut pwd: libc::passwd = mem::zeroed();
+        let mut buf = vec![0u8; 1024];
+        let mut result: *mut libc::passwd = std::ptr::null_mut();
+        
+        let ret = libc::getpwuid_r(
+            uid,
+            &mut pwd,
+            buf.as_mut_ptr() as *mut libc::c_char,
+            buf.len(),
+            &mut result,
+        );
+        
+        if ret == 0 && !result.is_null() {
+            let username_ptr = (*result).pw_name;
+            if !username_ptr.is_null() {
+                let username = CStr::from_ptr(username_ptr);
+                return username.to_str().ok().map(|s| s.to_string());
+            }
+        }
+        None
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn get_username_from_uid(_uid: u32) -> Option<String> {
+    None
 }

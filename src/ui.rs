@@ -17,11 +17,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
         height: size.height.saturating_sub(2),
     };
 
-    // Main layout: Timeline, then process list with spacing
+    // Main layout: Timeline, memory section, then process list with spacing
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(24), // Timeline graph
+            Constraint::Length(1),  // Spacing
+            Constraint::Length(4),  // Memory pressure section
             Constraint::Length(1),  // Spacing
             Constraint::Min(8),     // Process list
         ])
@@ -42,12 +44,21 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // Render cores panel in the right area
     render_cores_panel(f, app, timeline_chunks[1]);
 
+    // Render memory pressure section
+    render_memory_section(f, app, main_chunks[2]);
+
     // Render process list
-    render_process_list(f, app, main_chunks[2]);
+    render_process_list(f, app, main_chunks[4]);
+    
+    // Render kill confirmation dialog if active
+    if app.kill_confirmation_mode {
+        render_kill_confirmation(f, app, size);
+    }
 }
 
 fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
-    let processes = app.process_monitor.get_processes();
+    let all_processes = app.process_monitor.get_processes();
+    let processes = app.get_filtered_processes();
 
     // Split for table and help - ensure help gets exactly 1 line at bottom
     let chunks = Layout::default()
@@ -94,7 +105,13 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
         .collect();
 
     // Render title at top of the allocated chunk
-    let title_text = format!("Processes ({} total)", processes.len());
+    let title_text = if app.filter_mode {
+        format!("Processes ({} total) | Filter: {} _", all_processes.len(), app.filter_input)
+    } else if !app.filter_input.is_empty() {
+        format!("Processes ({}/{} shown) | Filter: {}", processes.len(), all_processes.len(), app.filter_input)
+    } else {
+        format!("Processes ({} total)", all_processes.len())
+    };
     let title = Paragraph::new(title_text).style(
         Style::default()
             .fg(Color::White)
@@ -135,10 +152,14 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_stateful_widget(table, table_area, &mut app.table_state);
 
     // Help text
-    let help_text = if app.is_paused() {
-        "[PAUSED] Space: Resume | q: Quit | j/k/↑↓: Navigate | s: Sort | +/-: Timeline | g/G: Top/Bottom | v: GPU"
+    let help_text = if app.kill_confirmation_mode {
+        "⚠️  CONFIRM KILL: [Y] Yes | [N] No | ESC: Cancel"
+    } else if app.filter_mode {
+        "Type to filter | Enter: Apply | ESC: Cancel"
+    } else if app.is_paused() {
+        "[PAUSED] Space: Resume | q: Quit | j/k/↑↓: Navigate | K: Kill | s: Sort | /: Filter | +/-: Timeline | g/G: Top/Bottom | v: GPU"
     } else {
-        "Space: Pause | q: Quit | j/k/↑↓: Navigate | s: Sort | +/-: Timeline | g/G: Top/Bottom | v: GPU"
+        "Space: Pause | q: Quit | j/k/↑↓: Navigate | K: Kill | s: Sort | /: Filter | +/-: Timeline | g/G: Top/Bottom | v: GPU"
     };
 
     // Render help in the bottom chunk (pinned to bottom)
@@ -507,6 +528,161 @@ fn render_core_dot_line(
     let paragraph = Paragraph::new(line).wrap(Wrap { trim: false });
 
     f.render_widget(paragraph, area);
+}
+
+fn render_memory_section(f: &mut Frame, app: &App, area: Rect) {
+    use crate::memory::MemoryPressure;
+    
+    let memory_info = app.memory_monitor.get_memory_info();
+    
+    // Create main title and stats layout
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Title
+            Constraint::Length(1), // Memory bar
+            Constraint::Length(1), // Statistics
+            Constraint::Length(1), // Footer/details
+        ])
+        .split(area);
+    
+    // Title with pressure status
+    let title_text = format!(
+        "Memory: {:.1}GB / {:.1}GB ({:.1}%) | Pressure: {}",
+        memory_info.used_memory as f64 / (1024.0 * 1024.0 * 1024.0),
+        memory_info.total_memory as f64 / (1024.0 * 1024.0 * 1024.0),
+        memory_info.memory_usage_percentage(),
+        memory_info.pressure.color_name()
+    );
+    
+    let title_color = match memory_info.pressure {
+        MemoryPressure::Green => Color::Green,
+        MemoryPressure::Yellow => Color::Yellow,
+        MemoryPressure::Red => Color::Red,
+    };
+    
+    let title = Paragraph::new(title_text)
+        .style(Style::default().fg(title_color).add_modifier(Modifier::BOLD));
+    f.render_widget(title, chunks[0]);
+    
+    // Memory usage bar
+    let bar_width = area.width as usize;
+    let used_width = ((memory_info.memory_usage_percentage() / 100.0) * bar_width as f64) as usize;
+    let free_width = bar_width.saturating_sub(used_width);
+    
+    let bar_text = format!(
+        "{}{}",
+        "█".repeat(used_width),
+        "░".repeat(free_width)
+    );
+    
+    let memory_bar = Paragraph::new(bar_text)
+        .style(Style::default().fg(title_color));
+    f.render_widget(memory_bar, chunks[1]);
+    
+    // Additional statistics
+    let stats_text = if memory_info.total_swap > 0 {
+        format!(
+            "Swap: {:.1}GB / {:.1}GB ({:.1}%) | Free: {:.1}GB",
+            memory_info.used_swap as f64 / (1024.0 * 1024.0 * 1024.0),
+            memory_info.total_swap as f64 / (1024.0 * 1024.0 * 1024.0),
+            memory_info.swap_usage_percentage(),
+            memory_info.free_memory() as f64 / (1024.0 * 1024.0 * 1024.0)
+        )
+    } else {
+        format!(
+            "Free: {:.1}GB | No swap configured",
+            memory_info.free_memory() as f64 / (1024.0 * 1024.0 * 1024.0)
+        )
+    };
+    
+    let stats = Paragraph::new(stats_text)
+        .style(Style::default().fg(Color::Gray));
+    f.render_widget(stats, chunks[2]);
+    
+    // Pressure explanation
+    let pressure_text = match memory_info.pressure {
+        MemoryPressure::Green => "System using RAM efficiently",
+        MemoryPressure::Yellow => "System using memory compression",
+        MemoryPressure::Red => "System heavily using swap space",
+    };
+    
+    let pressure_desc = Paragraph::new(pressure_text)
+        .style(Style::default().fg(Color::DarkGray));
+    f.render_widget(pressure_desc, chunks[3]);
+}
+
+fn render_kill_confirmation(f: &mut Frame, app: &App, screen_area: Rect) {
+    // Create a centered dialog box
+    let dialog_width = 50;
+    let dialog_height = 7;
+    
+    let dialog_x = (screen_area.width.saturating_sub(dialog_width)) / 2;
+    let dialog_y = (screen_area.height.saturating_sub(dialog_height)) / 2;
+    
+    let dialog_area = Rect {
+        x: dialog_x,
+        y: dialog_y,
+        width: dialog_width,
+        height: dialog_height,
+    };
+    
+    // Clear the background (create a modal effect)
+    let clear_widget = ratatui::widgets::Clear;
+    f.render_widget(clear_widget, dialog_area);
+    
+    // Create the dialog content
+    let dialog_chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Title
+            Constraint::Length(1), // Spacing
+            Constraint::Length(1), // Process info
+            Constraint::Length(1), // Warning
+            Constraint::Length(1), // Spacing
+            Constraint::Length(1), // Options
+            Constraint::Length(1), // Border
+        ])
+        .split(dialog_area);
+    
+    // Dialog border
+    let border_block = ratatui::widgets::Block::default()
+        .borders(ratatui::widgets::Borders::ALL)
+        .border_style(Style::default().fg(Color::Red))
+        .title("Kill Process");
+    f.render_widget(border_block, dialog_area);
+    
+    // Title
+    let title_text = "⚠️  KILL PROCESS  ⚠️";
+    let title = Paragraph::new(title_text)
+        .alignment(ratatui::layout::Alignment::Center)
+        .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+    f.render_widget(title, dialog_chunks[0]);
+    
+    // Process information
+    let process_info = if let Some(pid) = app.kill_target_pid {
+        format!("PID: {} - {}", pid, app.kill_target_name)
+    } else {
+        "Unknown process".to_string()
+    };
+    let process_text = Paragraph::new(process_info)
+        .alignment(ratatui::layout::Alignment::Center)
+        .style(Style::default().fg(Color::White));
+    f.render_widget(process_text, dialog_chunks[2]);
+    
+    // Warning message
+    let warning_text = "This action cannot be undone!";
+    let warning = Paragraph::new(warning_text)
+        .alignment(ratatui::layout::Alignment::Center)
+        .style(Style::default().fg(Color::Yellow));
+    f.render_widget(warning, dialog_chunks[3]);
+    
+    // Options
+    let options_text = "[Y] Kill Process    [N] Cancel";
+    let options = Paragraph::new(options_text)
+        .alignment(ratatui::layout::Alignment::Center)
+        .style(Style::default().fg(Color::Gray));
+    f.render_widget(options, dialog_chunks[5]);
 }
 
 fn truncate_string(s: &str, max_len: usize) -> String {
