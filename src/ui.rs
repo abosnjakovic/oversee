@@ -1,10 +1,53 @@
 use crate::app::App;
+use crate::process::{PortInfo, ConnectionState};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     widgets::{Paragraph, Row, Table, Wrap},
 };
+
+fn format_ports(ports: &[PortInfo]) -> String {
+    if ports.is_empty() {
+        return "-".to_string();
+    }
+    
+    // Sort ports by listening status first, then by port number
+    let mut sorted_ports = ports.to_vec();
+    sorted_ports.sort_by(|a, b| {
+        match (&a.state, &b.state) {
+            (ConnectionState::Listen, ConnectionState::Listen) => a.port.cmp(&b.port),
+            (ConnectionState::Listen, _) => std::cmp::Ordering::Less,
+            (_, ConnectionState::Listen) => std::cmp::Ordering::Greater,
+            _ => a.port.cmp(&b.port),
+        }
+    });
+    
+    // Take first 3 ports to fit in column
+    let displayed_ports: Vec<String> = sorted_ports
+        .iter()
+        .take(3)
+        .map(|port| {
+            match port.state {
+                ConnectionState::Listen => format!("{}L", port.port),  // L for listening
+                _ => port.port.to_string(),
+            }
+        })
+        .collect();
+    
+    let mut result = displayed_ports.join(",");
+    if ports.len() > 3 {
+        result.push_str("...");
+    }
+    
+    // Truncate to fit column (12 chars max)
+    if result.len() > 12 {
+        result.truncate(9);
+        result.push_str("...");
+    }
+    
+    result
+}
 
 pub fn render(f: &mut Frame, app: &mut App) {
     let size = f.area();
@@ -70,7 +113,7 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
         .split(area);
 
     // Header
-    let header = Row::new(vec!["PID", "User", "CPU%", "GPU%", "MEM", "Command"])
+    let header = Row::new(vec!["PID", "User", "CPU%", "GPU%", "Ports", "MEM", "Command"])
         .style(
             Style::default()
                 .fg(Color::Yellow)
@@ -97,6 +140,7 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
                 truncate_string(&proc.user, 8), // Truncate username to fit column
                 format!("{:.1}", proc.cpu_usage),
                 format!("{:.1}", proc.gpu_usage),
+                format_ports(&proc.ports),
                 format!("{:.0}", mem_mb),
                 truncate_string(&proc.name, 40),
             ])
@@ -137,12 +181,13 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
     let table = Table::new(
         rows,
         [
-            Constraint::Length(8), // PID
-            Constraint::Length(8), // User
-            Constraint::Length(6), // CPU%
-            Constraint::Length(6), // GPU%
-            Constraint::Length(7), // MEM (in MB)
-            Constraint::Min(30),   // Command (flexible)
+            Constraint::Length(8),  // PID
+            Constraint::Length(8),  // User
+            Constraint::Length(6),  // CPU%
+            Constraint::Length(6),  // GPU%
+            Constraint::Length(12), // Ports
+            Constraint::Length(7),  // MEM (in MB)
+            Constraint::Min(30),    // Command (flexible)
         ],
     )
     .header(header)

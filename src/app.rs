@@ -407,15 +407,23 @@ impl App {
             // No filter, show all processes
             self.filtered_indices.clear();
         } else {
-            // Filter processes by name (case-insensitive)
+            // Filter processes by name, user, PID, or port (case-insensitive)
             let filter_lower = self.filter_input.to_lowercase();
             self.filtered_indices = self.process_monitor
                 .get_processes()
                 .iter()
                 .enumerate()
                 .filter(|(_, proc)| {
+                    // Search by process name
                     proc.name.to_lowercase().contains(&filter_lower) ||
-                    proc.user.to_lowercase().contains(&filter_lower)
+                    // Search by username
+                    proc.user.to_lowercase().contains(&filter_lower) ||
+                    // Search by PID (convert to string)
+                    proc.pid.to_string().contains(&filter_lower) ||
+                    // Search by any port
+                    proc.ports.iter().any(|port| {
+                        port.port.to_string().contains(&filter_lower)
+                    })
                 })
                 .map(|(i, _)| i)
                 .collect();

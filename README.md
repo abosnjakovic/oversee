@@ -1,4 +1,3 @@
-# Oversee
 
 A modern system monitor for macOS, inspired by htop and btop++, built in Rust with a focus on Apple Silicon performance monitoring.
 
@@ -109,16 +108,6 @@ src/
 ├── process.rs       # Process enumeration with user resolution
 └── tui.rs           # Terminal initialization and cleanup
 ```
-
-## Future Roadmap
-
-- [ ] **Network Monitoring**: Connection tracking and bandwidth usage
-- [ ] **Disk I/O**: Real-time disk activity monitoring
-- [ ] **Port Scanning**: Network port utilization display
-- [ ] **Process Control**: Kill processes by name/PID
-- [ ] **Export Features**: Save monitoring data and screenshots
-- [ ] **Themes**: Customizable color schemes
-- [ ] **Configuration**: User preferences and settings
 
 ## Contributing
 
