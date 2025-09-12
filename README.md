@@ -1,38 +1,25 @@
 
 A modern system monitor for macOS, inspired by htop and btop++, built in Rust with a focus on Apple Silicon performance monitoring.
+Why? I wanted to view cpu AND gpu cores. I wanted memory pressure and not just used/swap due to how macs work differently here.
+
+<img width="1800" height="1169" alt="image" src="https://github.com/user-attachments/assets/7a4fa4ef-be54-44be-ac41-e94fccfc6891" />
+
 
 ## Features
 
-### 🚀 **System Monitoring**
-- **CPU Timeline**: Real-time CPU usage with btop++-style braille pattern visualization
-- **GPU Monitoring**: Apple Silicon GPU core utilization and overall usage
-- **Memory Pressure**: Apple-style memory pressure monitoring with color-coded status
 - **Process Management**: Detailed process list with CPU, GPU, memory usage, and user information
-
-### 📊 **Apple-Style Interface**
 - **Timeline Visualization**: Smooth braille character graphs showing system activity over time
 - **Memory Pressure**: Green/Yellow/Red pressure indicators matching Activity Monitor
-- **Core Monitoring**: Individual CPU and GPU core utilization display
-- **Real-time Updates**: 40 FPS responsive interface with optimized rendering
-
-### 🔍 **Advanced Process Features**
-- **Smart Filtering**: Press `/` to filter processes by name or user (vim-style)
-- **Real User Information**: Actual usernames including system accounts like `_windowserver`, `root`
-- **GPU Usage Estimation**: Per-process GPU usage estimation for Apple Silicon
-- **Multiple Sort Modes**: Sort by CPU, memory, name, or PID
-
-### ⌨️ **Keyboard Navigation**
+- **Smart Filtering**: Press `/` to filter processes by name, port or user (vim-style)
 - **Vim-style controls**: `j/k` for navigation, `g/G` for top/bottom, `/` for search
-- **Timeline controls**: `+/-` to adjust timeline scope (30s/60s/120s/300s)
-- **Process management**: Navigate and monitor processes efficiently
-- **Filter mode**: Real-time filtering with `Enter` to apply, `ESC` to cancel
 
-## Screenshots
+### Memory Pressure Algorithm
+Implements Apple's memory pressure calculation:
+- **Green (Normal)**: 50-100% memory available - efficient RAM usage
+- **Yellow (Warning)**: 30-50% memory available - using compression
+- **Red (Critical)**: 0-30% memory available - heavy swap usage
 
-The interface displays:
-- **Top section**: CPU/GPU timeline with core utilization panels
-- **Middle section**: Memory pressure with usage bar and detailed statistics  
-- **Bottom section**: Filterable process list with comprehensive information
+
 
 ## Installation
 
@@ -70,30 +57,6 @@ cargo run --release
 3. `Enter` to apply filter, `ESC` to cancel
 4. Navigation works within filtered results
 
-### Timeline Scopes
-- **30s**: High-resolution short-term view
-- **60s**: Standard monitoring window  
-- **120s**: Medium-term trend analysis
-- **300s**: Long-term system behavior
-
-## Technical Details
-
-### Memory Pressure Algorithm
-Implements Apple's memory pressure calculation:
-- **Green (Normal)**: 50-100% memory available - efficient RAM usage
-- **Yellow (Warning)**: 30-50% memory available - using compression
-- **Red (Critical)**: 0-30% memory available - heavy swap usage
-
-### Performance Optimizations
-- **Efficient Rendering**: Only updates when data changes
-- **Frame Rate Limiting**: 40 FPS for responsive navigation
-- **Smart Polling**: Optimized system data collection intervals
-- **Memory Management**: Bounded history buffers prevent memory leaks
-
-### Apple Silicon Features
-- **GPU Core Monitoring**: Individual GPU core utilization tracking
-- **Unified Memory**: Proper handling of Apple's unified memory architecture
-- **System Account Detection**: Full macOS user account support including service accounts
 
 ## Architecture
 
