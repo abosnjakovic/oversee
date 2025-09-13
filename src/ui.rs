@@ -97,6 +97,11 @@ pub fn render(f: &mut Frame, app: &mut App) {
     if app.kill_confirmation_mode {
         render_kill_confirmation(f, app, size);
     }
+    
+    // Render help popup if active (render last so it appears on top)
+    if app.help_mode {
+        render_help_popup(f, app);
+    }
 }
 
 fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
@@ -217,7 +222,7 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
 
 fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
     // Render title without border
-    let title_text = format!("System Timeline ({})", app.get_timeline_scope().name());
+    let title_text = format!("System Timeline ({})", app.get_timeline_position_text());
     let title = Paragraph::new(title_text).style(
         Style::default()
             .fg(Color::White)
@@ -275,7 +280,7 @@ fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
         &cpu_history,
         &gpu_history,
         app.is_gpu_visible(),
-        app.get_timeline_scope(),
+        app.get_timeline_offset(),
     );
 }
 
@@ -400,7 +405,7 @@ fn render_vertical_timeline(
     cpu_history: &[f32],
     gpu_history: &[f32],
     show_gpu: bool,
-    timeline_scope: crate::app::TimelineScope,
+    timeline_offset: usize,
 ) {
     // btop++ style braille patterns - 5x5 grid for smooth transitions
     // Each represents transition from one height to another
@@ -416,19 +421,39 @@ fn render_vertical_timeline(
     let available_width = area.width as usize;
     let available_height = area.height as usize;
 
-    // Get the data limited by timeline scope duration (in seconds)
-    let scope_duration = timeline_scope.duration_seconds();
+    // Always display 300 seconds, but offset by timeline_offset
+    const DISPLAY_DURATION: usize = 300;
 
-    let cpu_points = if cpu_history.len() > scope_duration {
-        &cpu_history[cpu_history.len() - scope_duration..]
+    // Calculate the range we want to display
+    let end_offset = timeline_offset;
+    let start_offset = end_offset + DISPLAY_DURATION;
+
+    // Get CPU data slice accounting for offset
+    let cpu_points = if cpu_history.len() > start_offset {
+        let start_idx = cpu_history.len() - start_offset;
+        let end_idx = cpu_history.len() - end_offset;
+        &cpu_history[start_idx..end_idx]
+    } else if cpu_history.len() > end_offset {
+        // Not enough history for full display, show what we have
+        let end_idx = cpu_history.len() - end_offset;
+        &cpu_history[0..end_idx]
     } else {
-        cpu_history
+        // No data in the requested range
+        &[]
     };
 
-    let gpu_points = if gpu_history.len() > scope_duration {
-        &gpu_history[gpu_history.len() - scope_duration..]
+    // Get GPU data slice accounting for offset
+    let gpu_points = if gpu_history.len() > start_offset {
+        let start_idx = gpu_history.len() - start_offset;
+        let end_idx = gpu_history.len() - end_offset;
+        &gpu_history[start_idx..end_idx]
+    } else if gpu_history.len() > end_offset {
+        // Not enough history for full display, show what we have
+        let end_idx = gpu_history.len() - end_offset;
+        &gpu_history[0..end_idx]
     } else {
-        gpu_history
+        // No data in the requested range
+        &[]
     };
 
     // Limit display width to available screen space
@@ -577,9 +602,9 @@ fn render_core_dot_line(
 
 fn render_memory_section(f: &mut Frame, app: &App, area: Rect) {
     use crate::memory::MemoryPressure;
-    
+
     let memory_info = app.memory_monitor.get_memory_info();
-    
+
     // Create main title and stats layout
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -590,7 +615,7 @@ fn render_memory_section(f: &mut Frame, app: &App, area: Rect) {
             Constraint::Length(1), // Footer/details
         ])
         .split(area);
-    
+
     // Title with pressure status
     let title_text = format!(
         "Memory: {:.1}GB / {:.1}GB ({:.1}%) | Pressure: {}",
@@ -599,31 +624,77 @@ fn render_memory_section(f: &mut Frame, app: &App, area: Rect) {
         memory_info.memory_usage_percentage(),
         memory_info.pressure.color_name()
     );
-    
+
     let title_color = match memory_info.pressure {
         MemoryPressure::Green => Color::Green,
         MemoryPressure::Yellow => Color::Yellow,
         MemoryPressure::Red => Color::Red,
     };
-    
+
     let title = Paragraph::new(title_text)
         .style(Style::default().fg(title_color).add_modifier(Modifier::BOLD));
     f.render_widget(title, chunks[0]);
-    
-    // Memory usage bar
+
+    // Memory usage bar with braille characters and gradient colors
+    // Braille progression characters for smooth transitions
+    const BRAILLE_LEVELS: [&str; 9] = [" ", "⡀", "⡄", "⡆", "⡇", "⣇", "⣧", "⣷", "⣿"];
+
     let bar_width = area.width as usize;
-    let used_width = ((memory_info.memory_usage_percentage() / 100.0) * bar_width as f64) as usize;
-    let free_width = bar_width.saturating_sub(used_width);
-    
-    let bar_text = format!(
-        "{}{}",
-        "█".repeat(used_width),
-        "░".repeat(free_width)
-    );
-    
-    let memory_bar = Paragraph::new(bar_text)
-        .style(Style::default().fg(title_color));
-    f.render_widget(memory_bar, chunks[1]);
+    let usage_percentage = memory_info.memory_usage_percentage();
+
+    // Build the bar character by character with appropriate colors
+    for col in 0..bar_width {
+        let position_percentage = (col as f64 / bar_width as f64) * 100.0;
+
+        // Determine the character and color based on position vs usage
+        let (character, color) = if position_percentage <= usage_percentage {
+            // Within used memory range
+            let fill_amount = if position_percentage + (100.0 / bar_width as f64) <= usage_percentage {
+                // Fully filled position
+                8
+            } else {
+                // Partially filled position at the boundary
+                let partial = ((usage_percentage - position_percentage) * bar_width as f64 / 100.0 * 8.0) as usize;
+                partial.min(8)
+            };
+
+            // Color based on position in the bar (gradual transition)
+            let color = if position_percentage < 30.0 {
+                Color::Green
+            } else if position_percentage < 50.0 {
+                // Gradient from green to yellow
+                if position_percentage < 40.0 {
+                    Color::LightGreen
+                } else {
+                    Color::Yellow
+                }
+            } else if position_percentage < 70.0 {
+                // Gradient from yellow to red
+                if position_percentage < 60.0 {
+                    Color::LightYellow
+                } else {
+                    Color::LightRed
+                }
+            } else {
+                Color::Red
+            };
+
+            (BRAILLE_LEVELS[fill_amount], color)
+        } else {
+            // Empty space
+            (BRAILLE_LEVELS[0], Color::DarkGray)
+        };
+
+        // Render each character individually with its color
+        let cell = Paragraph::new(character).style(Style::default().fg(color));
+        let cell_area = Rect {
+            x: chunks[1].x + col as u16,
+            y: chunks[1].y,
+            width: 1,
+            height: 1,
+        };
+        f.render_widget(cell, cell_area);
+    }
     
     // Additional statistics
     let stats_text = if memory_info.total_swap > 0 {
@@ -728,6 +799,138 @@ fn render_kill_confirmation(f: &mut Frame, app: &App, screen_area: Rect) {
         .alignment(ratatui::layout::Alignment::Center)
         .style(Style::default().fg(Color::Gray));
     f.render_widget(options, dialog_chunks[5]);
+}
+
+fn render_help_popup(f: &mut Frame, app: &App) {
+    use ratatui::{
+        layout::{Constraint, Direction, Layout, Margin},
+        style::{Color, Modifier, Style},
+        text::{Line, Span, Text},
+        widgets::{Block, Borders, Clear, Paragraph, Wrap},
+    };
+
+    // Calculate popup size (80% of screen)
+    let popup_area = {
+        let area = f.area();
+        let horizontal_margin = area.width / 10;
+        let vertical_margin = area.height / 10;
+        ratatui::layout::Rect {
+            x: horizontal_margin,
+            y: vertical_margin,
+            width: area.width.saturating_sub(horizontal_margin * 2),
+            height: area.height.saturating_sub(vertical_margin * 2),
+        }
+    };
+
+    // Clear the area
+    f.render_widget(Clear, popup_area);
+
+    // Create help content
+    let help_text = vec![
+        Line::from(vec![
+            Span::styled("KEYBINDS", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        ]),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Navigation:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        ]),
+        Line::from("  j/k or ↑↓     Navigate process list up/down"),
+        Line::from("  g             Jump to top of process list"),
+        Line::from("  G             Jump to bottom of process list"),
+        Line::from("  Page Up/Down  Navigate by 10 processes"),
+        Line::from("  Home/End      Jump to first/last process"),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Actions:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        ]),
+        Line::from("  Space         Pause/Resume monitoring"),
+        Line::from("  s             Cycle through sort modes"),
+        Line::from("  v             Toggle GPU visibility"),
+        Line::from("  K             Kill selected process (with confirmation)"),
+        Line::from("  /             Enter filter mode"),
+        Line::from("  +/=           Scroll timeline forward (newer data)"),
+        Line::from("  -             Scroll timeline backward (older data, up to 15 min)"),
+        Line::from("  ?             Toggle this help popup"),
+        Line::from("  q or ESC      Quit application"),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("TIMELINE", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        ]),
+        Line::from(""),
+        Line::from("Timeline always displays 5 minutes of data. Use +/- to navigate"),
+        Line::from("through up to 20 minutes of historical system metrics."),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("MEMORY PRESSURE ALGORITHM", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        ]),
+        Line::from(""),
+        Line::from("Oversee implements Apple-inspired memory pressure calculation:"),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Calculation Formula:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        ]),
+        Line::from("  1. Base: free_pct = (free_memory / total_memory) × 100"),
+        Line::from("  2. Swap adjustment: If swap_usage > 10%:"),
+        Line::from("     adjusted_free = free_pct × (1 - (swap_usage - 10) / 100)"),
+        Line::from("  3. Otherwise: adjusted_free = free_pct"),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Pressure Levels:", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
+        ]),
+        Line::from(vec![
+            Span::styled("  • Green: ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
+            Span::raw("Adjusted free ≥ 50% - Efficient RAM usage")
+        ]),
+        Line::from(vec![
+            Span::styled("  • Yellow: ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)),
+            Span::raw("30% ≤ Adjusted free < 50% - Memory compression active")
+        ]),
+        Line::from(vec![
+            Span::styled("  • Red: ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+            Span::raw("Adjusted free < 30% - Heavy swap usage")
+        ]),
+        Line::from(""),
+        Line::from("The memory bar uses gradient colors: green (0-30%) → yellow (30-50%)"),
+        Line::from("→ orange (50-70%) → red (70-100%) to show usage progression."),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Note: ", Style::default().fg(Color::Cyan)),
+            Span::raw("macOS uses memory differently than other systems.")
+        ]),
+        Line::from("High usage with green pressure is optimal. See README for details"),
+        Line::from("on why your Mac keeps memory full for better performance."),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("ABOUT OVERSEE", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD))
+        ]),
+        Line::from(""),
+        Line::from("A modern system monitor for macOS, inspired by htop and btop++,"),
+        Line::from("built in Rust with a focus on Apple Silicon performance monitoring."),
+        Line::from(""),
+        Line::from("Features CPU and GPU core monitoring, memory pressure indicators"),
+        Line::from("matching Activity Monitor, timeline visualization with braille"),
+        Line::from("characters, and vim-style navigation controls."),
+        Line::from(""),
+        Line::from(vec![
+            Span::styled("Press ? or ESC to close this help", Style::default().fg(Color::Gray).add_modifier(Modifier::ITALIC))
+        ]),
+    ];
+
+    // Create the popup block
+    let block = Block::default()
+        .title(" Help - Oversee System Monitor ")
+        .title_style(Style::default().fg(Color::White).add_modifier(Modifier::BOLD))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::White));
+
+    // Create the paragraph widget
+    let paragraph = Paragraph::new(Text::from(help_text))
+        .block(block)
+        .wrap(Wrap { trim: true })
+        .style(Style::default().fg(Color::White));
+
+    // Render the popup
+    f.render_widget(paragraph, popup_area);
 }
 
 fn truncate_string(s: &str, max_len: usize) -> String {

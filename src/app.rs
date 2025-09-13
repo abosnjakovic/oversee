@@ -4,53 +4,10 @@ use ratatui::widgets::TableState;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-const MAX_CPU_HISTORY: usize = 300; // 5 minutes at 1 second intervals
+const MAX_CPU_HISTORY: usize = 1200; // 20 minutes at 1 second intervals
 
-#[derive(Debug, Clone, Copy)]
-pub enum TimelineScope {
-    Seconds30,
-    Seconds60,
-    Seconds120,
-    Seconds300,
-}
-
-impl TimelineScope {
-    pub fn name(self) -> &'static str {
-        match self {
-            TimelineScope::Seconds30 => "30s",
-            TimelineScope::Seconds60 => "60s",
-            TimelineScope::Seconds120 => "120s",
-            TimelineScope::Seconds300 => "300s",
-        }
-    }
-
-    pub fn duration_seconds(self) -> usize {
-        match self {
-            TimelineScope::Seconds30 => 30,
-            TimelineScope::Seconds60 => 60,
-            TimelineScope::Seconds120 => 120,
-            TimelineScope::Seconds300 => 300,
-        }
-    }
-
-    pub fn next(self) -> Self {
-        match self {
-            TimelineScope::Seconds30 => TimelineScope::Seconds60,
-            TimelineScope::Seconds60 => TimelineScope::Seconds120,
-            TimelineScope::Seconds120 => TimelineScope::Seconds300,
-            TimelineScope::Seconds300 => TimelineScope::Seconds300,
-        }
-    }
-
-    pub fn prev(self) -> Self {
-        match self {
-            TimelineScope::Seconds30 => TimelineScope::Seconds30,
-            TimelineScope::Seconds60 => TimelineScope::Seconds30,
-            TimelineScope::Seconds120 => TimelineScope::Seconds60,
-            TimelineScope::Seconds300 => TimelineScope::Seconds120,
-        }
-    }
-}
+const TIMELINE_DISPLAY_SECONDS: usize = 300; // Always show 5 minutes
+const MAX_TIMELINE_OFFSET: usize = 900; // Allow scrolling back 15 minutes
 
 #[derive(Debug)]
 pub struct App {
@@ -66,13 +23,14 @@ pub struct App {
     pub table_state: TableState,
     pub running: bool,
     pub paused: bool,
-    pub timeline_scope: TimelineScope,
+    pub timeline_offset: usize,
     pub filter_mode: bool,
     pub filter_input: String,
     pub filtered_indices: Vec<usize>,
     pub kill_confirmation_mode: bool,
     pub kill_target_pid: Option<u32>,
     pub kill_target_name: String,
+    pub help_mode: bool,
     last_cpu_update: Instant,
     last_process_update: Instant,
     last_memory_update: Instant,
@@ -105,13 +63,14 @@ impl App {
             table_state,
             running: true,
             paused: false,
-            timeline_scope: TimelineScope::Seconds300,
+            timeline_offset: 0,
             filter_mode: false,
             filter_input: String::new(),
             filtered_indices: Vec::new(),
             kill_confirmation_mode: false,
             kill_target_pid: None,
             kill_target_name: String::new(),
+            help_mode: false,
             last_cpu_update: Instant::now(),
             last_process_update: Instant::now(),
             last_memory_update: Instant::now(),
@@ -228,6 +187,17 @@ impl App {
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) {
+        // Handle help mode
+        if self.help_mode {
+            match key.code {
+                KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Esc => {
+                    self.help_mode = false;
+                }
+                _ => {}
+            }
+            return;
+        }
+        
         // Handle kill confirmation mode
         if self.kill_confirmation_mode {
             match key.code {
@@ -285,6 +255,10 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.running = false;
             }
+            KeyCode::Char('?') => {
+                // Toggle help mode
+                self.help_mode = true;
+            }
             KeyCode::Char('/') => {
                 // Enter filter mode
                 self.filter_mode = true;
@@ -296,10 +270,12 @@ impl App {
                 self.process_monitor.next_sort_mode();
             }
             KeyCode::Char('+') | KeyCode::Char('=') => {
-                self.timeline_scope = self.timeline_scope.next();
+                // Move forward in time (decrease offset, min 0)
+                self.timeline_offset = self.timeline_offset.saturating_sub(30);
             }
             KeyCode::Char('-') => {
-                self.timeline_scope = self.timeline_scope.prev();
+                // Move backward in time (increase offset, max MAX_TIMELINE_OFFSET)
+                self.timeline_offset = (self.timeline_offset + 30).min(MAX_TIMELINE_OFFSET);
             }
             KeyCode::Char('v') => {
                 self.gpu_visible = !self.gpu_visible;
@@ -383,8 +359,22 @@ impl App {
         self.paused
     }
 
-    pub fn get_timeline_scope(&self) -> TimelineScope {
-        self.timeline_scope
+    pub fn get_timeline_position_text(&self) -> String {
+        if self.timeline_offset == 0 {
+            "Live".to_string()
+        } else {
+            let minutes = self.timeline_offset / 60;
+            let seconds = self.timeline_offset % 60;
+            if minutes > 0 {
+                format!("-{}m{}s", minutes, seconds)
+            } else {
+                format!("-{}s", seconds)
+            }
+        }
+    }
+
+    pub fn get_timeline_offset(&self) -> usize {
+        self.timeline_offset
     }
 
     pub fn is_gpu_visible(&self) -> bool {
