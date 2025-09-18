@@ -1,10 +1,10 @@
 use crate::app::App;
 use crate::process::{ConnectionState, PortInfo};
 use ratatui::{
-    Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     widgets::{Paragraph, Row, Table, Wrap},
+    Frame,
 };
 
 fn format_ports(ports: &[PortInfo]) -> String {
@@ -272,7 +272,11 @@ fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
                         count += 1;
                     }
                 }
-                if count > 0 { total / count as f32 } else { 0.0 }
+                if count > 0 {
+                    total / count as f32
+                } else {
+                    0.0
+                }
             })
             .collect()
     } else {
