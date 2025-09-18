@@ -2,6 +2,14 @@
 name = "oversee"
 version = "0.1.0"
 edition = "2024"
+description = "A modern system monitor for macOS with Apple Silicon GPU support"
+license = "MIT"
+authors = ["abosnjakovic"]
+repository = "https://github.com/abosnjakovic/oversee"
+homepage = "https://github.com/abosnjakovic/oversee"
+readme = "README.md"
+keywords = ["macos", "monitor", "system", "gpu", "apple-silicon"]
+categories = ["command-line-utilities", "visualization"]
 
 [dependencies]
 ratatui = { version = "0.29.0", features = ["all-widgets"] }

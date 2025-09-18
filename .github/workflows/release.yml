@@ -9,9 +9,63 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: write
+
 jobs:
-  build-and-release:
-    name: Build and Release
+  create-release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    outputs:
+      upload_url: ${{ steps.create_release.outputs.upload_url }}
+      version: ${{ steps.get_version.outputs.version }}
+    steps:
+      - name: Get version from tag
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        id: create_release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version="${{ steps.get_version.outputs.version }}"
+          gh release create ${{ github.ref_name }} \
+            --repo ${{ github.repository }} \
+            --title "Release ${{ github.ref_name }}" \
+            --notes "Release ${version}
+
+          ## Changes
+          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
+          for details.
+
+          ## Installation
+
+          ### macOS (Apple Silicon)
+          \`\`\`bash
+          version=\"${version}\"
+          repo=\"${{ github.repository }}\"
+          ref=\"${{ github.ref_name }}\"
+          curl -L \"https://github.com/\${repo}/releases/download/\${ref}/oversee-\${version}-aarch64-apple-darwin.tar.gz\" | tar xz
+          \`\`\`
+
+          ### macOS (Intel)
+          \`\`\`bash
+          version=\"${version}\"
+          repo=\"${{ github.repository }}\"
+          ref=\"${{ github.ref_name }}\"
+          curl -L \"https://github.com/\${repo}/releases/download/\${ref}/oversee-\${version}-x86_64-apple-darwin.tar.gz\" | tar xz
+          \`\`\`" \
+            --draft=false \
+            --prerelease=false
+
+          # Get upload URL for use by build jobs
+          upload_url=$(gh api repos/${{ github.repository }}/releases/tags/${{ github.ref_name }} --jq '.upload_url')
+          echo "upload_url=${upload_url}" >> $GITHUB_OUTPUT
+
+  build-release:
+    name: Build Release
+    needs: create-release
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -27,10 +81,6 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Get version from tag
-        id: get_version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
@@ -43,61 +93,27 @@ jobs:
       - name: Create archive
         run: |
           cd target/${{ matrix.target }}/release
-          version="${{ steps.get_version.outputs.version }}"
+          version="${{ needs.create-release.outputs.version }}"
           suffix="${{ matrix.suffix }}"
           archive_name="oversee-${version}-${suffix}.tar.gz"
           tar czf "$archive_name" oversee
           ls -la "$archive_name"
 
-      - name: Create Release and Upload Assets
+      - name: Upload Release Asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          # Create release only on first matrix job to avoid conflicts
-          if [ "${{ matrix.suffix }}" = "aarch64-apple-darwin" ]; then
-            gh release create ${{ github.ref_name }} \
-              --title "Release ${{ github.ref_name }}" \
-              --notes "Release ${{ steps.get_version.outputs.version }}
-
-          ## Changes
-          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
-          for details.
-
-          ## Installation
-
-          ### macOS (Apple Silicon)
-          \`\`\`bash
-          version="${{ steps.get_version.outputs.version }}"
-          repo="${{ github.repository }}"
-          ref="${{ github.ref_name }}"
-          curl -L "https://github.com/\${repo}/releases/download/\${ref}/oversee-\${version}-aarch64-apple-darwin.tar.gz" | tar xz
-          \`\`\`
-
-          ### macOS (Intel)
-          \`\`\`bash
-          version="${{ steps.get_version.outputs.version }}"
-          repo="${{ github.repository }}"
-          ref="${{ github.ref_name }}"
-          curl -L "https://github.com/\${repo}/releases/download/\${ref}/oversee-\${version}-x86_64-apple-darwin.tar.gz" | tar xz
-          \`\`\`" \
-              --draft=false \
-              --prerelease=false
-          else
-            # Wait for release to be created by the other job
-            sleep 30
-          fi
-
-          # Upload asset for this matrix job
-          version="${{ steps.get_version.outputs.version }}"
+          version="${{ needs.create-release.outputs.version }}"
           suffix="${{ matrix.suffix }}"
           target="${{ matrix.target }}"
           archive_name="oversee-${version}-${suffix}.tar.gz"
           gh release upload ${{ github.ref_name }} \
+            --repo ${{ github.repository }} \
             "target/${target}/release/${archive_name}"
 
   publish-crates:
     name: Publish to crates.io
-    needs: build-and-release
+    needs: [create-release, build-release]
     runs-on: macos-latest
     steps:
       - name: Checkout repository
