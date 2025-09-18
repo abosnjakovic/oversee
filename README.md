@@ -1,14 +1,3 @@
-
-
-
-publishs to crates.io, homebrew, github releases and nixpkgs.
-
-
-
-
-
-
-
 A modern system monitor for macOS, inspired by htop and btop++, built in Rust with a focus on Apple Silicon performance monitoring.
 Why? I wanted to view cpu AND gpu cores. I wanted memory pressure and not just used/swap due to how macs work differently here.
 
