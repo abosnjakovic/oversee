@@ -9,7 +9,9 @@ pub struct GpuCoreInfo {
 pub struct GpuInfo {
     pub cores: Vec<GpuCoreInfo>,
     pub overall_utilization: f32, // 0-100%
+    #[allow(dead_code)] // Used for display/info purposes
     pub core_count: usize,
+    #[allow(dead_code)] // Used for display/info purposes
     pub chip_name: String,
 }
 
@@ -48,10 +50,12 @@ impl GpuMonitor {
             .map(|_| VecDeque::with_capacity(300))
             .collect();
 
-        let mut current_info = GpuInfo::default();
-        current_info.core_count = core_count;
-        current_info.chip_name = chip_name.clone();
-        current_info.cores = (0..core_count).map(|_| GpuCoreInfo::default()).collect();
+        let current_info = GpuInfo {
+            core_count,
+            chip_name: chip_name.clone(),
+            cores: (0..core_count).map(|_| GpuCoreInfo::default()).collect(),
+            ..Default::default()
+        };
 
         GpuMonitor {
             current_info,
@@ -183,7 +187,7 @@ impl GpuMonitor {
         // Generate base GPU utilization
         let base_util = ((now % 100) as f32) * 0.8; // 0-80%
         let variation = ((now % 10) as f32 - 5.0) * 5.0; // ±25%
-        let overall_utilization = (base_util + variation).max(0.0).min(100.0);
+        let overall_utilization = (base_util + variation).clamp(0.0, 100.0);
 
         // Generate per-core utilization with realistic variations
         let mut cores = Vec::with_capacity(self.core_count);
@@ -199,9 +203,7 @@ impl GpuMonitor {
                 -5.0 // Efficiency cores get less work
             };
 
-            let core_util = (overall_utilization + core_variation + core_bias)
-                .max(0.0)
-                .min(100.0);
+            let core_util = (overall_utilization + core_variation + core_bias).clamp(0.0, 100.0);
 
             cores.push(GpuCoreInfo {
                 utilization: core_util,

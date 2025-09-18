@@ -419,11 +419,9 @@ impl App {
         }
 
         // Reset selection if it's out of bounds
-        if !self.filtered_indices.is_empty() {
-            if self.selected_process >= self.filtered_indices.len() {
-                self.selected_process = 0;
-                self.table_state.select(Some(0));
-            }
+        if !self.filtered_indices.is_empty() && self.selected_process >= self.filtered_indices.len() {
+            self.selected_process = 0;
+            self.table_state.select(Some(0));
         }
     }
 
