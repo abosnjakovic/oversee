@@ -175,6 +175,7 @@ impl App {
 
     pub fn handle_event(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
         // Use zero timeout - don't block here since we handle timing in main loop
+        #[allow(clippy::collapsible_if)] // Suggested fix uses unstable let-else syntax
         if event::poll(Duration::from_millis(0))? {
             if let Event::Key(key) = event::read()? {
                 self.handle_key_event(key);
