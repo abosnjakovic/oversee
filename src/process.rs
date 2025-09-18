@@ -1,8 +1,8 @@
-use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
+use std::collections::HashMap;
 use std::ffi::CStr;
 use std::mem;
 use std::process::Command;
-use std::collections::HashMap;
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
 
 #[derive(Debug, Clone, Copy)]
 pub enum Protocol {
@@ -20,9 +20,12 @@ pub enum ConnectionState {
 #[derive(Debug, Clone)]
 pub struct PortInfo {
     pub port: u16,
+    #[allow(dead_code)] // May be used for detailed network info in future
     pub protocol: Protocol,
     pub state: ConnectionState,
+    #[allow(dead_code)] // May be used for detailed network info in future
     pub local_address: Option<String>,
+    #[allow(dead_code)] // May be used for detailed network info in future
     pub remote_address: Option<String>,
 }
 
@@ -78,34 +81,34 @@ impl ConnectionState {
 
 fn get_process_ports() -> HashMap<u32, Vec<PortInfo>> {
     let mut port_map = HashMap::new();
-    
+
     // Run lsof command to get network connections
-    let output = match Command::new("lsof")
-        .args(["-i", "-P", "-n"])
-        .output()
-    {
+    let output = match Command::new("lsof").args(["-i", "-P", "-n"]).output() {
         Ok(output) => output,
         Err(_) => return port_map, // lsof not available or failed
     };
-    
+
     if !output.status.success() {
         return port_map;
     }
-    
+
     let output_str = String::from_utf8_lossy(&output.stdout);
-    
+
     for line in output_str.lines() {
         // Skip header line
         if line.starts_with("COMMAND") {
             continue;
         }
-        
+
         // Parse standard lsof output line
         if let Some(port_info) = parse_lsof_line(line) {
-            port_map.entry(port_info.0).or_insert_with(Vec::new).push(port_info.1);
+            port_map
+                .entry(port_info.0)
+                .or_insert_with(Vec::new)
+                .push(port_info.1);
         }
     }
-    
+
     port_map
 }
 
@@ -113,33 +116,33 @@ fn parse_lsof_line(line: &str) -> Option<(u32, PortInfo)> {
     // Parse lines like:
     // rapportd   1000 adam    8u  IPv4 0xe349afbd3b2ee8ee      0t0  TCP *:60744 (LISTEN)
     // identitys  1016 adam   18u  IPv4 0x34f005a6e91ac63b      0t0  UDP *:*
-    
+
     let parts: Vec<&str> = line.split_whitespace().collect();
     if parts.len() < 9 {
         return None;
     }
-    
+
     // Extract PID (second column, index 1)
     let pid = parts[1].parse::<u32>().ok()?;
-    
+
     // Extract protocol (8th column, index 7: TCP or UDP)
     let protocol = Protocol::from_str(parts[7])?;
-    
+
     // Extract address info (9th column, index 8)
     let addr_part = parts[8];
-    
+
     // Skip non-port entries like "*:*"
     if addr_part == "*:*" {
         return None;
     }
-    
+
     // Extract state if present (in parentheses at the end)
     let state = if parts.len() > 9 && parts[9].starts_with('(') && parts[9].ends_with(')') {
-        ConnectionState::from_str(&parts[9][1..parts[9].len()-1])
+        ConnectionState::from_str(&parts[9][1..parts[9].len() - 1])
     } else {
         ConnectionState::Other
     };
-    
+
     // Parse the address part
     let (local_addr, remote_addr) = if let Some(arrow_pos) = addr_part.find("->") {
         // Connection: local->remote
@@ -150,17 +153,20 @@ fn parse_lsof_line(line: &str) -> Option<(u32, PortInfo)> {
         // Listening or single address
         (Some(addr_part.to_string()), None)
     };
-    
+
     // Extract port from local address
     let port = extract_port(addr_part)?;
-    
-    Some((pid, PortInfo {
-        port,
-        protocol,
-        state,
-        local_address: local_addr,
-        remote_address: remote_addr,
-    }))
+
+    Some((
+        pid,
+        PortInfo {
+            port,
+            protocol,
+            state,
+            local_address: local_addr,
+            remote_address: remote_addr,
+        },
+    ))
 }
 
 fn extract_port(addr: &str) -> Option<u16> {
@@ -168,7 +174,7 @@ fn extract_port(addr: &str) -> Option<u16> {
     // 127.0.0.1:8080
     // *:22
     // [::1]:8080
-    
+
     if let Some(colon_pos) = addr.rfind(':') {
         let port_str = &addr[colon_pos + 1..];
         port_str.parse().ok()
@@ -193,7 +199,10 @@ impl ProcessMonitor {
         system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
-            ProcessRefreshKind::new().with_cpu().with_memory().with_user(UpdateKind::Always),
+            ProcessRefreshKind::new()
+                .with_cpu()
+                .with_memory()
+                .with_user(UpdateKind::Always),
         );
 
         // Initialize users list
@@ -212,7 +221,10 @@ impl ProcessMonitor {
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
-            ProcessRefreshKind::new().with_cpu().with_memory().with_user(UpdateKind::Always),
+            ProcessRefreshKind::new()
+                .with_cpu()
+                .with_memory()
+                .with_user(UpdateKind::Always),
         );
 
         // Get port information for all processes
@@ -326,7 +338,7 @@ fn get_username_from_uid(uid: u32) -> Option<String> {
         let mut pwd: libc::passwd = mem::zeroed();
         let mut buf = vec![0u8; 1024];
         let mut result: *mut libc::passwd = std::ptr::null_mut();
-        
+
         let ret = libc::getpwuid_r(
             uid,
             &mut pwd,
@@ -334,7 +346,7 @@ fn get_username_from_uid(uid: u32) -> Option<String> {
             buf.len(),
             &mut result,
         );
-        
+
         if ret == 0 && !result.is_null() {
             let username_ptr = (*result).pw_name;
             if !username_ptr.is_null() {

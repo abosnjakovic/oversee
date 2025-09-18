@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 #[derive(Debug, Clone)]
 pub struct GpuCoreInfo {
-    pub utilization: f32,     // 0-100%
+    pub utilization: f32, // 0-100%
 }
 
 #[derive(Debug, Clone)]
@@ -15,9 +15,7 @@ pub struct GpuInfo {
 
 impl Default for GpuCoreInfo {
     fn default() -> Self {
-        GpuCoreInfo {
-            utilization: 0.0,
-        }
+        GpuCoreInfo { utilization: 0.0 }
     }
 }
 
@@ -45,18 +43,16 @@ impl GpuMonitor {
     pub fn new() -> Self {
         let available = Self::is_apple_silicon();
         let (chip_name, core_count) = Self::detect_gpu_cores();
-        
+
         let core_histories = (0..core_count)
             .map(|_| VecDeque::with_capacity(300))
             .collect();
-        
+
         let mut current_info = GpuInfo::default();
         current_info.core_count = core_count;
         current_info.chip_name = chip_name.clone();
-        current_info.cores = (0..core_count)
-            .map(|_| GpuCoreInfo::default())
-            .collect();
-        
+        current_info.cores = (0..core_count).map(|_| GpuCoreInfo::default()).collect();
+
         GpuMonitor {
             current_info,
             core_histories,
@@ -65,24 +61,24 @@ impl GpuMonitor {
             chip_name,
         }
     }
-    
+
     pub fn is_available(&self) -> bool {
         self.available
     }
-    
+
     pub fn refresh(&mut self) {
         if !self.available {
             return;
         }
-        
+
         // Generate GPU info with per-core data
         self.current_info = self.get_gpu_info();
-        
+
         // Add each core's data to history
         for (i, core) in self.current_info.cores.iter().enumerate() {
             if i < self.core_histories.len() {
                 self.core_histories[i].push_back(core.utilization);
-                
+
                 // Keep only the last 300 points (5 minutes)
                 if self.core_histories[i].len() > 300 {
                     self.core_histories[i].pop_front();
@@ -90,24 +86,21 @@ impl GpuMonitor {
             }
         }
     }
-    
+
     pub fn get_info(&self) -> &GpuInfo {
         &self.current_info
     }
-    
-    
+
     pub fn get_core_count(&self) -> usize {
         self.core_count
     }
-    
-    
-    
+
     // Check if running on Apple Silicon
     fn is_apple_silicon() -> bool {
         #[cfg(target_os = "macos")]
         {
             use std::process::Command;
-            
+
             // Check if we're running on Apple Silicon
             if let Ok(output) = Command::new("uname").arg("-m").output() {
                 let arch = String::from_utf8_lossy(&output.stdout);
@@ -121,19 +114,20 @@ impl GpuMonitor {
             false
         }
     }
-    
+
     // Detect GPU core count based on Apple Silicon chip
     fn detect_gpu_cores() -> (String, usize) {
         #[cfg(target_os = "macos")]
         {
             use std::process::Command;
-            
+
             // Try to get chip name from system_profiler
             if let Ok(output) = Command::new("system_profiler")
                 .arg("SPHardwareDataType")
-                .output() {
+                .output()
+            {
                 let info = String::from_utf8_lossy(&output.stdout);
-                
+
                 // Parse chip name and determine core count
                 if info.contains("Apple M1") {
                     if info.contains("M1 Max") {
@@ -172,48 +166,48 @@ impl GpuMonitor {
                 }
             }
         }
-        
+
         // Fallback
         ("Unknown".to_string(), 8)
     }
-    
+
     // Generate GPU info with per-core data
     fn get_gpu_info(&self) -> GpuInfo {
         use std::time::SystemTime;
-        
+
         let now = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
             .as_secs();
-        
+
         // Generate base GPU utilization
         let base_util = ((now % 100) as f32) * 0.8; // 0-80%
         let variation = ((now % 10) as f32 - 5.0) * 5.0; // ±25%
         let overall_utilization = (base_util + variation).max(0.0).min(100.0);
-        
+
         // Generate per-core utilization with realistic variations
         let mut cores = Vec::with_capacity(self.core_count);
         for i in 0..self.core_count {
             // Each core has some individual variation
             let core_seed = (now + i as u64) % 50;
             let core_variation = (core_seed as f32 - 25.0) * 2.0; // ±50%
-            
+
             // Some cores are more active (e.g., first few cores handle more work)
             let core_bias = if i < self.core_count / 2 {
                 10.0 // Performance cores get more work
             } else {
                 -5.0 // Efficiency cores get less work
             };
-            
+
             let core_util = (overall_utilization + core_variation + core_bias)
                 .max(0.0)
                 .min(100.0);
-            
+
             cores.push(GpuCoreInfo {
                 utilization: core_util,
             });
         }
-        
+
         GpuInfo {
             cores,
             overall_utilization,
@@ -221,7 +215,6 @@ impl GpuMonitor {
             chip_name: self.chip_name.clone(),
         }
     }
-    
 }
 
 impl Default for GpuMonitor {

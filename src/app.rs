@@ -5,8 +5,6 @@ use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 const MAX_CPU_HISTORY: usize = 1200; // 20 minutes at 1 second intervals
-
-const TIMELINE_DISPLAY_SECONDS: usize = 300; // Always show 5 minutes
 const MAX_TIMELINE_OFFSET: usize = 900; // Allow scrolling back 15 minutes
 
 #[derive(Debug)]
@@ -197,7 +195,7 @@ impl App {
             }
             return;
         }
-        
+
         // Handle kill confirmation mode
         if self.kill_confirmation_mode {
             match key.code {
@@ -220,7 +218,7 @@ impl App {
             }
             return;
         }
-        
+
         // Handle filter mode input separately
         if self.filter_mode {
             match key.code {
@@ -249,7 +247,7 @@ impl App {
             }
             return;
         }
-        
+
         // Normal mode key handling
         match key.code {
             KeyCode::Char('q') | KeyCode::Esc => {
@@ -384,14 +382,14 @@ impl App {
     pub fn get_gpu_monitor(&self) -> &GpuMonitor {
         &self.gpu_monitor
     }
-    
+
     fn kill_process(&self, pid: u32) {
         unsafe {
             // Use SIGTERM (15) first for graceful shutdown
             libc::kill(pid as i32, libc::SIGTERM);
         }
     }
-    
+
     pub fn update_filtered_indices(&mut self) {
         if self.filter_input.is_empty() {
             // No filter, show all processes
@@ -399,7 +397,8 @@ impl App {
         } else {
             // Filter processes by name, user, PID, or port (case-insensitive)
             let filter_lower = self.filter_input.to_lowercase();
-            self.filtered_indices = self.process_monitor
+            self.filtered_indices = self
+                .process_monitor
                 .get_processes()
                 .iter()
                 .enumerate()
@@ -418,7 +417,7 @@ impl App {
                 .map(|(i, _)| i)
                 .collect();
         }
-        
+
         // Reset selection if it's out of bounds
         if !self.filtered_indices.is_empty() {
             if self.selected_process >= self.filtered_indices.len() {
@@ -427,7 +426,7 @@ impl App {
             }
         }
     }
-    
+
     pub fn get_filtered_processes(&self) -> Vec<&crate::process::ProcessInfo> {
         if self.filtered_indices.is_empty() && !self.filter_input.is_empty() {
             // Filter active but no matches
