@@ -1,56 +1,17 @@
+---
 name: Release
 
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  create-release:
-    name: Create Release
-    runs-on: ubuntu-latest
-    outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
-      version: ${{ steps.get_version.outputs.version }}
-    steps:
-    - name: Get version from tag
-      id: get_version
-      run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-    - name: Create Release
-      id: create_release
-      uses: actions/create-release@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        tag_name: ${{ github.ref }}
-        release_name: Release ${{ github.ref }}
-        draft: false
-        prerelease: false
-        body: |
-          Release ${{ steps.get_version.outputs.version }}
-          
-          ## Changes
-          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md) for details.
-          
-          ## Installation
-          
-          ### macOS (Apple Silicon)
-          ```bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/oversee-${{ steps.get_version.outputs.version }}-aarch64-apple-darwin.tar.gz | tar xz
-          ```
-          
-          ### macOS (Intel)
-          ```bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/oversee-${{ steps.get_version.outputs.version }}-x86_64-apple-darwin.tar.gz | tar xz
-          ```
-
-  build-release:
-    name: Build Release
-    needs: create-release
+  build-and-release:
+    name: Build and Release
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
@@ -63,71 +24,91 @@ jobs:
             suffix: x86_64-apple-darwin
 
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        target: ${{ matrix.target }}
+      - name: Get version from tag
+        id: get_version
+        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
 
-    - name: Cache cargo dependencies
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: release-${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          release-${{ runner.os }}-${{ matrix.target }}-cargo-
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: ${{ matrix.target }}
 
-    - name: Build release binary
-      run: cargo build --release --target ${{ matrix.target }}
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
 
-    - name: Create archive
-      run: |
-        cd target/${{ matrix.target }}/release
-        tar czf oversee-${{ needs.create-release.outputs.version }}-${{ matrix.suffix }}.tar.gz oversee
-        ls -la oversee-${{ needs.create-release.outputs.version }}-${{ matrix.suffix }}.tar.gz
+      - name: Create archive
+        run: |
+          cd target/${{ matrix.target }}/release
+          version="${{ steps.get_version.outputs.version }}"
+          suffix="${{ matrix.suffix }}"
+          archive_name="oversee-${version}-${suffix}.tar.gz"
+          tar czf "$archive_name" oversee
+          ls -la "$archive_name"
 
-    - name: Upload Release Asset
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      with:
-        upload_url: ${{ needs.create-release.outputs.upload_url }}
-        asset_path: target/${{ matrix.target }}/release/oversee-${{ needs.create-release.outputs.version }}-${{ matrix.suffix }}.tar.gz
-        asset_name: oversee-${{ needs.create-release.outputs.version }}-${{ matrix.suffix }}.tar.gz
-        asset_content_type: application/gzip
+      - name: Create Release and Upload Assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Create release only on first matrix job to avoid conflicts
+          if [ "${{ matrix.suffix }}" = "aarch64-apple-darwin" ]; then
+            gh release create ${{ github.ref_name }} \
+              --title "Release ${{ github.ref_name }}" \
+              --notes "Release ${{ steps.get_version.outputs.version }}
+
+          ## Changes
+          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
+          for details.
+
+          ## Installation
+
+          ### macOS (Apple Silicon)
+          \`\`\`bash
+          version="${{ steps.get_version.outputs.version }}"
+          repo="${{ github.repository }}"
+          ref="${{ github.ref_name }}"
+          curl -L "https://github.com/\${repo}/releases/download/\${ref}/oversee-\${version}-aarch64-apple-darwin.tar.gz" | tar xz
+          \`\`\`
+
+          ### macOS (Intel)
+          \`\`\`bash
+          version="${{ steps.get_version.outputs.version }}"
+          repo="${{ github.repository }}"
+          ref="${{ github.ref_name }}"
+          curl -L "https://github.com/\${repo}/releases/download/\${ref}/oversee-\${version}-x86_64-apple-darwin.tar.gz" | tar xz
+          \`\`\`" \
+              --draft=false \
+              --prerelease=false
+          else
+            # Wait for release to be created by the other job
+            sleep 30
+          fi
+
+          # Upload asset for this matrix job
+          version="${{ steps.get_version.outputs.version }}"
+          suffix="${{ matrix.suffix }}"
+          target="${{ matrix.target }}"
+          archive_name="oversee-${version}-${suffix}.tar.gz"
+          gh release upload ${{ github.ref_name }} \
+            "target/${target}/release/${archive_name}"
 
   publish-crates:
     name: Publish to crates.io
-    needs: [create-release, build-release]
+    needs: build-and-release
     runs-on: macos-latest
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
 
-    - name: Cache cargo dependencies
-      uses: actions/cache@v4
-      with:
-        path: |
-          ~/.cargo/bin/
-          ~/.cargo/registry/index/
-          ~/.cargo/registry/cache/
-          ~/.cargo/git/db/
-          target/
-        key: publish-${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-        restore-keys: |
-          publish-${{ runner.os }}-cargo-
-
-    - name: Publish to crates.io
-      run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
-      env:
-        CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+      - name: Publish to crates.io
+        run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
