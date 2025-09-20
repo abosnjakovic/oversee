@@ -39,6 +39,11 @@ So when Oversee shows high memory usage but green pressure, your Mac isn't strug
 
 ## Installation
 
+From cargo via crates.io
+```bash
+cargo install oversee
+```
+
 ### Prerequisites
 - macOS (Apple Silicon or Intel)
 - Rust 1.70+ (install via [rustup](https://rustup.rs/))
