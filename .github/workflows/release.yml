@@ -5,6 +5,21 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g., 0.1.5)'
+        required: true
+        type: string
+      create_new_release:
+        description: 'Create new GitHub release'
+        required: true
+        type: boolean
+        default: true
+      release_tag:
+        description: 'Tag name for release (defaults to v{version})'
+        required: false
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,20 +34,45 @@ jobs:
     outputs:
       upload_url: ${{ steps.create_release.outputs.upload_url }}
       version: ${{ steps.get_version.outputs.version }}
+      tag: ${{ steps.get_version.outputs.tag }}
     steps:
-      - name: Get version from tag
+      - name: Get version from tag or input
         id: get_version
-        run: echo "version=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            # Manual trigger - use provided version
+            version="${{ github.event.inputs.version }}"
+            tag="${{ github.event.inputs.release_tag || format('v{0}', github.event.inputs.version) }}"
+          else
+            # Tag push trigger - extract from ref
+            version="${GITHUB_REF#refs/tags/v}"
+            tag="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "version=${version}" >> $GITHUB_OUTPUT
+          echo "tag=${tag}" >> $GITHUB_OUTPUT
+          echo "Version: ${version}, Tag: ${tag}"
 
       - name: Create Release
         id: create_release
+        if: github.event_name == 'push' || github.event.inputs.create_new_release == 'true'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           version="${{ steps.get_version.outputs.version }}"
-          gh release create ${{ github.ref_name }} \
+          tag="${{ steps.get_version.outputs.tag }}"
+
+          # Check if release already exists
+          if gh release view "${tag}" --repo ${{ github.repository }} &>/dev/null; then
+            echo "Release ${tag} already exists, skipping creation"
+            # Get existing release upload URL
+            upload_url=$(gh api repos/${{ github.repository }}/releases/tags/${tag} --jq '.upload_url')
+            echo "upload_url=${upload_url}" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          gh release create "${tag}" \
             --repo ${{ github.repository }} \
-            --title "Release ${{ github.ref_name }}" \
+            --title "Release ${tag}" \
             --notes "Release ${version}
 
           ## Changes
@@ -45,7 +85,7 @@ jobs:
           \`\`\`bash
           version=\"${version}\"
           repo=\"${{ github.repository }}\"
-          ref=\"${{ github.ref_name }}\"
+          ref=\"${tag}\"
           curl -L \"https://github.com/\${repo}/releases/download/\${ref}/oversee-\${version}-aarch64-apple-darwin.tar.gz\" | tar xz
           \`\`\`
 
@@ -53,14 +93,14 @@ jobs:
           \`\`\`bash
           version=\"${version}\"
           repo=\"${{ github.repository }}\"
-          ref=\"${{ github.ref_name }}\"
+          ref=\"${tag}\"
           curl -L \"https://github.com/\${repo}/releases/download/\${ref}/oversee-\${version}-x86_64-apple-darwin.tar.gz\" | tar xz
           \`\`\`" \
             --draft=false \
             --prerelease=false
 
           # Get upload URL for use by build jobs
-          upload_url=$(gh api repos/${{ github.repository }}/releases/tags/${{ github.ref_name }} --jq '.upload_url')
+          upload_url=$(gh api repos/${{ github.repository }}/releases/tags/${tag} --jq '.upload_url')
           echo "upload_url=${upload_url}" >> $GITHUB_OUTPUT
 
   build-release:
@@ -107,7 +147,8 @@ jobs:
           suffix="${{ matrix.suffix }}"
           target="${{ matrix.target }}"
           archive_name="oversee-${version}-${suffix}.tar.gz"
-          gh release upload ${{ github.ref_name }} \
+          tag="${{ needs.create-release.outputs.tag }}"
+          gh release upload "${tag}" \
             --repo ${{ github.repository }} \
             "target/${target}/release/${archive_name}"
 
@@ -126,7 +167,7 @@ jobs:
         run: |
           version="${{ needs.create-release.outputs.version }}"
           repo="${{ github.repository }}"
-          tag="${{ github.ref_name }}"
+          tag="${{ needs.create-release.outputs.tag }}"
 
           # Download and calculate SHA256 for Apple Silicon
           aarch64_url="https://github.com/${repo}/releases/download/${tag}/oversee-${version}-aarch64-apple-darwin.tar.gz"
@@ -146,7 +187,7 @@ jobs:
         run: |
           version="${{ needs.create-release.outputs.version }}"
           repo="${{ github.repository }}"
-          tag="${{ github.ref_name }}"
+          tag="${{ needs.create-release.outputs.tag }}"
           aarch64_sha256="${{ steps.sha256.outputs.aarch64_sha256 }}"
           x86_sha256="${{ steps.sha256.outputs.x86_sha256 }}"
 
@@ -174,12 +215,12 @@ jobs:
           end
           EOF
 
-          # Replace placeholders
-          sed -i "s/REPO_PLACEHOLDER/${repo}/g" oversee.rb
-          sed -i "s/VERSION_PLACEHOLDER/${version}/g" oversee.rb
-          sed -i "s/TAG_PLACEHOLDER/${tag}/g" oversee.rb
-          sed -i "s/AARCH64_SHA256_PLACEHOLDER/${aarch64_sha256}/g" oversee.rb
-          sed -i "s/X86_SHA256_PLACEHOLDER/${x86_sha256}/g" oversee.rb
+          # Replace placeholders using | delimiter to avoid issues with forward slashes
+          sed -i "s|REPO_PLACEHOLDER|${repo}|g" oversee.rb
+          sed -i "s|VERSION_PLACEHOLDER|${version}|g" oversee.rb
+          sed -i "s|TAG_PLACEHOLDER|${tag}|g" oversee.rb
+          sed -i "s|AARCH64_SHA256_PLACEHOLDER|${aarch64_sha256}|g" oversee.rb
+          sed -i "s|X86_SHA256_PLACEHOLDER|${x86_sha256}|g" oversee.rb
 
           echo "Generated formula:"
           cat oversee.rb
