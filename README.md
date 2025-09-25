@@ -1,7 +1,13 @@
 A modern system monitor for macOS, inspired by htop and btop++, built in Rust with a focus on Apple Silicon performance monitoring.
 Why? I wanted to view cpu AND gpu cores. I wanted memory pressure and not just used/swap due to how macs work differently here.
 
-<img width="1800" height="1169" alt="image" src="https://github.com/user-attachments/assets/7a4fa4ef-be54-44be-ac41-e94fccfc6891" />
+<img width="3008" height="1692" alt="image" src="https://github.com/user-attachments/assets/11ebd649-7ae1-4418-a0a1-3961b5d4bbef" />
+
+Help menu ?
+<img width="3008" height="1692" alt="image" src="https://github.com/user-attachments/assets/e4ad8205-ab7b-4415-950a-39a87b412226" />
+
+Filtering so you can find, monitory and kill procs by port
+<img width="3008" height="1692" alt="image" src="https://github.com/user-attachments/assets/ba389cd1-95f8-4635-994a-47be6c061e25" />
 
 
 ## Features
@@ -39,7 +45,13 @@ So when Oversee shows high memory usage but green pressure, your Mac isn't strug
 
 ## Installation
 
-From cargo via crates.io
+Via homebrew
+```bash
+brew tap abosnjakovic/oversee
+brew install oversee
+```
+
+Via cargo
 ```bash
 cargo install oversee
 ```
