@@ -225,7 +225,7 @@ jobs:
           echo "Generated formula:"
           cat oversee.rb
 
-      - name: Update Homebrew Tap
+      - name: Update Homebrew Formula in Main Repo
         env:
           HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
@@ -233,35 +233,12 @@ jobs:
           git config --global user.name "github-actions[bot]"
           git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          # Clone or create the tap repository
-          tap_repo="homebrew-oversee"
-          tap_url="https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${{ github.repository_owner }}/${tap_repo}.git"
-
-          if git ls-remote "${tap_url}" &>/dev/null; then
-            echo "Cloning existing tap repository..."
-            git clone "${tap_url}" tap-repo
-          else
-            echo "Creating new tap repository..."
-            mkdir tap-repo
-            cd tap-repo
-            git init
-            git remote add origin "${tap_url}"
-            mkdir -p Formula
-            echo "# ${{ github.repository_owner }}/oversee Homebrew Tap" > README.md
-            echo "" >> README.md
-            echo "## Installation" >> README.md
-            echo "" >> README.md
-            echo "\`\`\`bash" >> README.md
-            echo "brew tap ${{ github.repository_owner }}/oversee" >> README.md
-            echo "brew install oversee" >> README.md
-            echo "\`\`\`" >> README.md
-            git add README.md
-            git commit -m "Initial tap repository setup"
-            cd ..
-          fi
+          # Clone the main repository
+          main_repo_url="https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${{ github.repository }}.git"
+          git clone "${main_repo_url}" main-repo
 
           # Copy formula and commit
-          cd tap-repo
+          cd main-repo
           mkdir -p Formula
           cp ../oversee.rb Formula/oversee.rb
 
@@ -272,6 +249,9 @@ jobs:
             git commit -m "Update oversee formula to ${{ needs.create-release.outputs.version }}"
             git push origin main
             echo "Formula updated successfully!"
+            echo "Users can install with:"
+            echo "  brew tap ${{ github.repository }} https://github.com/${{ github.repository }}"
+            echo "  brew install oversee"
           fi
 
   publish-crates:
@@ -288,6 +268,6 @@ jobs:
           toolchain: stable
 
       - name: Publish to crates.io
-        run: cargo publish --token ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish --allow-dirty --token ${{ secrets.CRATES_IO_TOKEN }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}

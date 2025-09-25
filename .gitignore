@@ -1,3 +1,9 @@
 /target
 .claude
 .serena
+
+# Environment variables (contains secrets)
+scripts/.env
+
+# Test files
+test_homebrew_formula.sh
