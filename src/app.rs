@@ -164,7 +164,7 @@ impl App {
     fn update_process_data(&mut self) {
         if !self.paused {
             self.process_monitor.refresh();
-            
+
             // Re-apply filter after refreshing processes
             self.update_filtered_indices();
 
