@@ -44,11 +44,12 @@ Via cargo
 cargo install oversee
 ```
 
-### Prerequisites
-- macOS (Apple Silicon or Intel)
+### Build from Source
+
+#### Prerequisites
+- macOS (Apple Silicon)
 - Rust 1.70+ (install via [rustup](https://rustup.rs/))
 
-### Build from Source
 ```bash
 git clone https://github.com/your-username/oversee.git
 cd oversee
