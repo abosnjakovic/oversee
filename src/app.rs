@@ -7,6 +7,20 @@ use std::time::{Duration, Instant};
 const MAX_CPU_HISTORY: usize = 1200; // 20 minutes at 1 second intervals
 const MAX_TIMELINE_OFFSET: usize = 900; // Allow scrolling back 15 minutes
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TimelineMode {
+    Line,
+    Scatter,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SmoothingMode {
+    None,
+    Light,    // 3-point moving average
+    Medium,   // 5-point moving average
+    Heavy,    // 8-point moving average
+}
+
 #[derive(Debug)]
 pub struct App {
     pub cpu_monitor: CpuMonitor,
@@ -29,6 +43,8 @@ pub struct App {
     pub kill_target_pid: Option<u32>,
     pub kill_target_name: String,
     pub help_mode: bool,
+    pub timeline_mode: TimelineMode,
+    pub smoothing_mode: SmoothingMode,
     last_cpu_update: Instant,
     last_process_update: Instant,
     last_memory_update: Instant,
@@ -69,6 +85,8 @@ impl App {
             kill_target_pid: None,
             kill_target_name: String::new(),
             help_mode: false,
+            timeline_mode: TimelineMode::Line,
+            smoothing_mode: SmoothingMode::Heavy,
             last_cpu_update: Instant::now(),
             last_process_update: Instant::now(),
             last_memory_update: Instant::now(),
@@ -282,6 +300,22 @@ impl App {
             KeyCode::Char('v') => {
                 self.gpu_visible = !self.gpu_visible;
             }
+            KeyCode::Char('m') => {
+                // Toggle timeline mode between Line and Scatter
+                self.timeline_mode = match self.timeline_mode {
+                    TimelineMode::Line => TimelineMode::Scatter,
+                    TimelineMode::Scatter => TimelineMode::Line,
+                };
+            }
+            KeyCode::Char('n') => {
+                // Cycle through smoothing modes
+                self.smoothing_mode = match self.smoothing_mode {
+                    SmoothingMode::None => SmoothingMode::Light,
+                    SmoothingMode::Light => SmoothingMode::Medium,
+                    SmoothingMode::Medium => SmoothingMode::Heavy,
+                    SmoothingMode::Heavy => SmoothingMode::None,
+                };
+            }
             KeyCode::Char('K') => {
                 // Enter kill confirmation mode for selected process
                 let processes = self.get_filtered_processes();
@@ -385,6 +419,14 @@ impl App {
 
     pub fn get_gpu_monitor(&self) -> &GpuMonitor {
         &self.gpu_monitor
+    }
+
+    pub fn get_timeline_mode(&self) -> TimelineMode {
+        self.timeline_mode
+    }
+
+    pub fn get_smoothing_mode(&self) -> SmoothingMode {
+        self.smoothing_mode
     }
 
     fn kill_process(&self, pid: u32) {

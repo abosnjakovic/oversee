@@ -323,6 +323,10 @@ impl ProcessMonitor {
         self.sort_mode = self.sort_mode.next();
         self.sort_processes();
     }
+
+    pub fn get_sort_mode(&self) -> SortMode {
+        self.sort_mode
+    }
 }
 
 impl Default for ProcessMonitor {

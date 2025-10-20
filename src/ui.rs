@@ -1,5 +1,5 @@
-use crate::app::App;
-use crate::process::{ConnectionState, PortInfo};
+use crate::app::{App, SmoothingMode, TimelineMode};
+use crate::process::{ConnectionState, PortInfo, SortMode};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -115,10 +115,18 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    // Header
-    let header = Row::new(vec![
-        "PID", "User", "CPU%", "GPU%", "Ports", "MEM", "Command",
-    ])
+    // Header with sort indicators
+    let sort_mode = app.process_monitor.get_sort_mode();
+    let header_cells = vec![
+        if matches!(sort_mode, SortMode::Pid) { "PID ↓" } else { "PID" },
+        "User",
+        if matches!(sort_mode, SortMode::Cpu) { "CPU% ↓" } else { "CPU%" },
+        "GPU%",
+        "Ports",
+        if matches!(sort_mode, SortMode::Memory) { "MEM ↓" } else { "MEM" },
+        if matches!(sort_mode, SortMode::Name) { "Command ↑" } else { "Command" },
+    ];
+    let header = Row::new(header_cells)
     .style(
         Style::default()
             .fg(Color::Yellow)
@@ -132,7 +140,7 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
         .enumerate()
         .map(|(i, proc)| {
             let style = if i == app.get_selected_process() {
-                Style::default().bg(Color::Blue).fg(Color::White)
+                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -205,7 +213,7 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
         ],
     )
     .header(header)
-    .row_highlight_style(Style::default().bg(Color::Blue).fg(Color::White))
+    .row_highlight_style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))
     .highlight_symbol("► ");
 
     f.render_stateful_widget(table, table_area, &mut app.table_state);
@@ -216,9 +224,9 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
     } else if app.filter_mode {
         "Type to filter | Enter: Apply | ESC: Cancel"
     } else if app.is_paused() {
-        "[PAUSED] Space: Resume | q: Quit | j/k/↑↓: Navigate | K: Kill | s: Sort | /: Filter | +/-: Timeline | g/G: Top/Bottom | v: GPU"
+        "[PAUSED] Space: Resume | q: Quit | ↑↓: Nav | K: Kill | s: Sort | /: Filter | +/-: Time | m: Mode | n: Smooth | g/G: Top/Bot | v: GPU"
     } else {
-        "Space: Pause | q: Quit | j/k/↑↓: Navigate | K: Kill | s: Sort | /: Filter | +/-: Timeline | g/G: Top/Bottom | v: GPU"
+        "Space: Pause | q: Quit | ↑↓: Nav | K: Kill | s: Sort | /: Filter | +/-: Time | m: Mode | n: Smooth | g/G: Top/Bot | v: GPU"
     };
 
     // Render help in the bottom chunk (pinned to bottom)
@@ -230,8 +238,23 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
-    // Render title without border
-    let title_text = format!("System Timeline ({})", app.get_timeline_position_text());
+    // Render title without border - include mode and smoothing in title
+    let mode_text = match app.get_timeline_mode() {
+        TimelineMode::Line => "Line",
+        TimelineMode::Scatter => "Scatter",
+    };
+    let smoothing_text = match app.get_smoothing_mode() {
+        SmoothingMode::None => "Raw",
+        SmoothingMode::Light => "Light",
+        SmoothingMode::Medium => "Medium",
+        SmoothingMode::Heavy => "Heavy",
+    };
+    let title_text = format!(
+        "System Timeline ({}) [{}] {{{}}}",
+        app.get_timeline_position_text(),
+        mode_text,
+        smoothing_text
+    );
     let title = Paragraph::new(title_text).style(
         Style::default()
             .fg(Color::White)
@@ -282,14 +305,16 @@ fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
     // Get GPU history
     let gpu_history: Vec<f32> = app.gpu_overall_history.iter().copied().collect();
 
-    // Render vertical dot timeline
-    render_vertical_timeline(
+    // Render oscilloscope-style timeline with smoothing
+    render_oscilloscope_timeline(
         f,
         inner,
         &cpu_history,
         &gpu_history,
         app.is_gpu_visible(),
         app.get_timeline_offset(),
+        app.get_timeline_mode(),
+        app.get_smoothing_mode(),
     );
 }
 
@@ -408,27 +433,165 @@ fn render_gpu_cores_panel(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-fn render_vertical_timeline(
+
+/// Apply moving average smoothing to data
+/// window_size: number of points to average (e.g., 3, 5, 8)
+fn apply_moving_average(data: &[f32], window_size: usize) -> Vec<f32> {
+    if data.is_empty() || window_size == 0 {
+        return data.to_vec();
+    }
+
+    let mut smoothed = Vec::with_capacity(data.len());
+    
+    for i in 0..data.len() {
+        // Calculate the window bounds
+        let start = if i >= window_size / 2 {
+            i - window_size / 2
+        } else {
+            0
+        };
+        let end = (i + window_size / 2 + 1).min(data.len());
+        
+        // Calculate average of window
+        let sum: f32 = data[start..end].iter().sum();
+        let count = (end - start) as f32;
+        smoothed.push(sum / count);
+    }
+    
+    smoothed
+}
+
+/// Apply exponential moving average smoothing
+/// alpha: smoothing factor (0.0-1.0), higher = less smoothing
+fn apply_exponential_smoothing(data: &[f32], alpha: f32) -> Vec<f32> {
+    if data.is_empty() {
+        return data.to_vec();
+    }
+
+    let mut smoothed = Vec::with_capacity(data.len());
+    let mut ema = data[0]; // Start with first value
+    
+    for &value in data.iter() {
+        ema = alpha * value + (1.0 - alpha) * ema;
+        smoothed.push(ema);
+    }
+    
+    smoothed
+}
+
+/// Interpolate between data points to create denser visualization
+/// Creates `factor` intermediate points between each pair of data points
+fn interpolate_data(data: &[f32], factor: usize) -> Vec<f32> {
+    if data.len() < 2 || factor == 0 {
+        return data.to_vec();
+    }
+
+    let mut interpolated = Vec::with_capacity(data.len() * factor);
+    
+    for i in 0..data.len() - 1 {
+        let current = data[i];
+        let next = data[i + 1];
+        
+        // Add the current point
+        interpolated.push(current);
+        
+        // Add interpolated points
+        for j in 1..factor {
+            let fraction = j as f32 / factor as f32;
+            let interpolated_value = current + (next - current) * fraction;
+            interpolated.push(interpolated_value);
+        }
+    }
+    
+    // Add the last point
+    if let Some(&last) = data.last() {
+        interpolated.push(last);
+    }
+    
+    interpolated
+}
+
+/// Apply smoothing based on mode
+fn apply_smoothing(data: &[f32], mode: SmoothingMode) -> Vec<f32> {
+    match mode {
+        SmoothingMode::None => data.to_vec(),
+        SmoothingMode::Light => apply_moving_average(data, 3),
+        SmoothingMode::Medium => apply_moving_average(data, 5),
+        SmoothingMode::Heavy => apply_moving_average(data, 8),
+    }
+}
+
+/// Helper function to get a braille character with a dot at specific position
+/// Braille pattern is 2x4 dots (col 0-1, row 0-3)
+/// Returns the Unicode braille character with the dot at the given position
+fn get_braille_dot(col: usize, row: usize) -> char {
+    // Braille dot positions (ISO/TR 11548-1)
+    // Col 0: bits 0,1,2,6 (values 1,2,4,64)
+    // Col 1: bits 3,4,5,7 (values 8,16,32,128)
+    let dot_values = [
+        [1, 8],    // Row 0
+        [2, 16],   // Row 1
+        [4, 32],   // Row 2
+        [64, 128], // Row 3
+    ];
+    
+    if row < 4 && col < 2 {
+        let value = dot_values[row][col];
+        std::char::from_u32(0x2800 + value).unwrap_or(' ')
+    } else {
+        ' '
+    }
+}
+
+/// Get braille character for line drawing between two heights
+/// Creates a connected line appearance by combining dots
+fn get_braille_line(col: usize, start_row: usize, end_row: usize) -> char {
+    if start_row == end_row {
+        return get_braille_dot(col, start_row);
+    }
+    
+    let (min_row, max_row) = if start_row < end_row {
+        (start_row, end_row)
+    } else {
+        (end_row, start_row)
+    };
+    
+    // Combine multiple dots for line effect
+    let mut value = 0u32;
+    let dot_values = [
+        [1, 8],    // Row 0
+        [2, 16],   // Row 1
+        [4, 32],   // Row 2
+        [64, 128], // Row 3
+    ];
+    
+    for row in min_row..=max_row.min(3) {
+        if col < 2 {
+            value += dot_values[row][col];
+        }
+    }
+    
+    std::char::from_u32(0x2800 + value).unwrap_or(' ')
+}
+
+/// Render oscilloscope-style timeline with waveform visualization
+/// Supports both line and scatter modes with configurable smoothing
+fn render_oscilloscope_timeline(
     f: &mut Frame,
     area: Rect,
     cpu_history: &[f32],
     gpu_history: &[f32],
     show_gpu: bool,
     timeline_offset: usize,
+    mode: TimelineMode,
+    smoothing: SmoothingMode,
 ) {
-    // btop++ style braille patterns - 5x5 grid for smooth transitions
-    // Each represents transition from one height to another
-    const BRAILLE_UP: [&str; 25] = [
-        " ", "⢀", "⢠", "⢰", "⢸", // From empty to increasing heights
-        "⡀", "⣀", "⣠", "⣰", "⣸", // One level higher start
-        "⡄", "⣄", "⣤", "⣴", "⣼", // Middle transitions
-        "⡆", "⣆", "⣦", "⣶", "⣾", // Upper-middle transitions
-        "⡇", "⣇", "⣧", "⣷", "⣿", // To full height
-    ];
-
-    // Calculate dimensions
     let available_width = area.width as usize;
     let available_height = area.height as usize;
+
+    if available_width == 0 || available_height == 0 {
+        return;
+    }
 
     // Always display 300 seconds, but offset by timeline_offset
     const DISPLAY_DURATION: usize = 300;
@@ -443,11 +606,9 @@ fn render_vertical_timeline(
         let end_idx = cpu_history.len() - end_offset;
         &cpu_history[start_idx..end_idx]
     } else if cpu_history.len() > end_offset {
-        // Not enough history for full display, show what we have
         let end_idx = cpu_history.len() - end_offset;
         &cpu_history[0..end_idx]
     } else {
-        // No data in the requested range
         &[]
     };
 
@@ -457,93 +618,191 @@ fn render_vertical_timeline(
         let end_idx = gpu_history.len() - end_offset;
         &gpu_history[start_idx..end_idx]
     } else if gpu_history.len() > end_offset {
-        // Not enough history for full display, show what we have
         let end_idx = gpu_history.len() - end_offset;
         &gpu_history[0..end_idx]
     } else {
-        // No data in the requested range
         &[]
     };
 
+    // Apply smoothing to the data
+    let cpu_smoothed = apply_smoothing(cpu_points, smoothing);
+    let gpu_smoothed = apply_smoothing(gpu_points, smoothing);
+
+    // Apply interpolation for denser visualization (4x density)
+    let interpolation_factor = 4;
+    let cpu_dense = interpolate_data(&cpu_smoothed, interpolation_factor);
+    let gpu_dense = interpolate_data(&gpu_smoothed, interpolation_factor);
+
     // Limit display width to available screen space
-    let display_points = available_width.min(cpu_points.len());
-    let cpu_display = if cpu_points.len() > display_points {
-        &cpu_points[cpu_points.len() - display_points..]
+    // Each character cell has 2 braille columns, so we need 2 data points per character
+    let display_points = (available_width * 2).min(cpu_dense.len());
+    let cpu_display = if cpu_dense.len() > display_points {
+        &cpu_dense[cpu_dense.len() - display_points..]
     } else {
-        cpu_points
+        &cpu_dense[..]
     };
 
-    let gpu_display = if gpu_points.len() > display_points {
-        &gpu_points[gpu_points.len() - display_points..]
+    let gpu_display = if gpu_dense.len() > display_points {
+        &gpu_dense[gpu_dense.len() - display_points..]
     } else {
-        gpu_points
+        &gpu_dense[..]
     };
 
-    // Store previous values for smooth transitions
-    let mut prev_cpu_val = 0;
-    let mut _prev_gpu_val = 0;
+    // Create a buffer for the display (each cell can have a braille character)
+    // We use braille patterns which are 2 cols x 4 rows of dots per character cell
+    let char_width = available_width;
+    let char_height = available_height;
+    
+    // Each character cell has 2x4 braille dots, so total resolution is:
+    let dot_height = char_height * 4;
+    
+    let mut prev_cpu_pos: Option<(u16, u16, usize, usize)> = None; // (x, y, char_row, sub_row)
+    let mut prev_gpu_pos: Option<(u16, u16, usize, usize)> = None;
 
-    // Render each column (time point)
+    // Render each time point (column)
     for col in 0..display_points {
-        let cpu_usage = cpu_display.get(col).copied().unwrap_or(0.0);
+        let cpu_usage = cpu_display.get(col).copied().unwrap_or(0.0).clamp(0.0, 100.0);
         let gpu_usage = if show_gpu {
-            gpu_display.get(col).copied().unwrap_or(0.0)
+            gpu_display.get(col).copied().unwrap_or(0.0).clamp(0.0, 100.0)
         } else {
             0.0
         };
 
-        // Map values to 0-4 range for braille selection
-        let cpu_val = ((cpu_usage / 100.0) * 4.0).round() as usize;
-        let gpu_val = ((gpu_usage / 100.0) * 4.0).round() as usize;
+        // Map usage (0-100%) to dot row (0 = bottom, dot_height-1 = top)
+        let cpu_dot_row = ((cpu_usage / 100.0) * (dot_height - 1) as f32).round() as usize;
+        let gpu_dot_row = ((gpu_usage / 100.0) * (dot_height - 1) as f32).round() as usize;
+        
+        // Convert dot row to character row and sub-row within character (0-3)
+        let cpu_char_row = char_height.saturating_sub(1 + cpu_dot_row / 4);
+        let cpu_sub_row = 3 - (cpu_dot_row % 4);
+        
+        let gpu_char_row = char_height.saturating_sub(1 + gpu_dot_row / 4);
+        let gpu_sub_row = 3 - (gpu_dot_row % 4);
 
-        // Render column of braille characters
-        for row in 0..available_height {
-            let x = area.x + col as u16;
-            let y = area.y + row as u16;
+        // Determine which column within the braille character (0 or 1)
+        let braille_col = col % 2;
+        let char_col = col / 2;
 
-            // Calculate what height this row represents (top = 100%, bottom = 0%)
-            let row_height =
-                ((available_height - row - 1) as f32 / available_height as f32) * 100.0;
-
-            // Determine symbol and color for this position
-            let (symbol, color) = if row_height <= cpu_usage {
-                // Within CPU usage range - use braille with transition
-                if row
-                    == available_height
-                        - 1
-                        - ((cpu_usage / 100.0 * available_height as f32) as usize)
-                {
-                    // This is the top of the bar - use transition symbol
-                    let symbol_idx = prev_cpu_val * 5 + cpu_val;
-                    (
-                        BRAILLE_UP[symbol_idx.min(24)],
-                        get_gradient_color(cpu_usage),
-                    )
-                } else {
-                    // Fill below the top
-                    ("⣿", get_gradient_color(cpu_usage))
-                }
-            } else if show_gpu && row_height <= gpu_usage {
-                // GPU overlay
-                ("⡇", Color::Magenta)
-            } else {
-                // Empty space
-                (" ", Color::Black)
-            };
-
-            let cell = Paragraph::new(symbol).style(Style::default().fg(color));
-            let cell_area = Rect {
-                x,
-                y,
-                width: 1,
-                height: 1,
-            };
-            f.render_widget(cell, cell_area);
+        if char_col >= char_width {
+            continue;
         }
 
-        // Update previous values for next iteration
-        prev_cpu_val = cpu_val;
-        _prev_gpu_val = gpu_val;
+        let x = area.x + char_col as u16;
+        let cpu_y = area.y + cpu_char_row as u16;
+        let gpu_y = area.y + gpu_char_row as u16;
+
+        // Render CPU signal with vertical line connections
+        if mode == TimelineMode::Line {
+            if let Some((prev_x, prev_y, prev_char_row, prev_sub_row)) = prev_cpu_pos {
+                // Draw vertical connecting lines if positions differ significantly
+                if prev_x == x && prev_y != cpu_y {
+                    // Same column, different rows - draw vertical connection
+                    let (start_y, end_y) = if prev_y < cpu_y {
+                        (prev_y, cpu_y)
+                    } else {
+                        (cpu_y, prev_y)
+                    };
+                    
+                    for y in start_y..=end_y {
+                        let row_idx = (y - area.y) as usize;
+                        if row_idx < char_height {
+                            // Fill with vertical line character
+                            let connector = if y == start_y || y == end_y {
+                                get_braille_dot(braille_col, if y == prev_y { prev_sub_row } else { cpu_sub_row })
+                            } else {
+                                // Middle section - full vertical line
+                                '⡇' // Vertical braille line
+                            };
+                            
+                            let cell = Paragraph::new(connector.to_string())
+                                .style(Style::default().fg(Color::Cyan));
+                            f.render_widget(cell, Rect { x, y, width: 1, height: 1 });
+                        }
+                    }
+                } else if prev_char_row == cpu_char_row && braille_col == 1 {
+                    // Same character row, draw connecting line within character
+                    let cpu_char = get_braille_line(braille_col, prev_sub_row, cpu_sub_row);
+                    let cell = Paragraph::new(cpu_char.to_string())
+                        .style(Style::default().fg(Color::Cyan));
+                    f.render_widget(cell, Rect { x, y: cpu_y, width: 1, height: 1 });
+                } else {
+                    // Just a dot
+                    let cpu_char = get_braille_dot(braille_col, cpu_sub_row);
+                    let cell = Paragraph::new(cpu_char.to_string())
+                        .style(Style::default().fg(Color::Cyan));
+                    f.render_widget(cell, Rect { x, y: cpu_y, width: 1, height: 1 });
+                }
+            } else {
+                // First point
+                let cpu_char = get_braille_dot(braille_col, cpu_sub_row);
+                let cell = Paragraph::new(cpu_char.to_string())
+                    .style(Style::default().fg(Color::Cyan));
+                f.render_widget(cell, Rect { x, y: cpu_y, width: 1, height: 1 });
+            }
+        } else {
+            // Scatter mode - just dots
+            let cpu_char = get_braille_dot(braille_col, cpu_sub_row);
+            let cell = Paragraph::new(cpu_char.to_string())
+                .style(Style::default().fg(Color::Cyan));
+            f.render_widget(cell, Rect { x, y: cpu_y, width: 1, height: 1 });
+        }
+
+        // Render GPU signal if visible
+        if show_gpu && gpu_char_row < char_height {
+            if mode == TimelineMode::Line {
+                if let Some((prev_x, prev_y, prev_char_row, prev_sub_row)) = prev_gpu_pos {
+                    // Draw vertical connecting lines for GPU
+                    if prev_x == x && prev_y != gpu_y {
+                        let (start_y, end_y) = if prev_y < gpu_y {
+                            (prev_y, gpu_y)
+                        } else {
+                            (gpu_y, prev_y)
+                        };
+                        
+                        for y in start_y..=end_y {
+                            let row_idx = (y - area.y) as usize;
+                            if row_idx < char_height {
+                                let connector = if y == start_y || y == end_y {
+                                    get_braille_dot(braille_col, if y == prev_y { prev_sub_row } else { gpu_sub_row })
+                                } else {
+                                    '⡇'
+                                };
+                                
+                                let cell = Paragraph::new(connector.to_string())
+                                    .style(Style::default().fg(Color::Magenta));
+                                f.render_widget(cell, Rect { x, y, width: 1, height: 1 });
+                            }
+                        }
+                    } else if prev_char_row == gpu_char_row && braille_col == 1 {
+                        let gpu_char = get_braille_line(braille_col, prev_sub_row, gpu_sub_row);
+                        let cell = Paragraph::new(gpu_char.to_string())
+                            .style(Style::default().fg(Color::Magenta));
+                        f.render_widget(cell, Rect { x, y: gpu_y, width: 1, height: 1 });
+                    } else {
+                        let gpu_char = get_braille_dot(braille_col, gpu_sub_row);
+                        let cell = Paragraph::new(gpu_char.to_string())
+                            .style(Style::default().fg(Color::Magenta));
+                        f.render_widget(cell, Rect { x, y: gpu_y, width: 1, height: 1 });
+                    }
+                } else {
+                    let gpu_char = get_braille_dot(braille_col, gpu_sub_row);
+                    let cell = Paragraph::new(gpu_char.to_string())
+                        .style(Style::default().fg(Color::Magenta));
+                    f.render_widget(cell, Rect { x, y: gpu_y, width: 1, height: 1 });
+                }
+            } else {
+                let gpu_char = get_braille_dot(braille_col, gpu_sub_row);
+                let cell = Paragraph::new(gpu_char.to_string())
+                    .style(Style::default().fg(Color::Magenta));
+                f.render_widget(cell, Rect { x, y: gpu_y, width: 1, height: 1 });
+            }
+        }
+
+        // Update previous positions for line mode
+        prev_cpu_pos = Some((x, cpu_y, cpu_char_row, cpu_sub_row));
+        if show_gpu {
+            prev_gpu_pos = Some((x, gpu_y, gpu_char_row, gpu_sub_row));
+        }
     }
 }
 
@@ -867,6 +1126,8 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from("  Space         Pause/Resume monitoring"),
         Line::from("  s             Cycle through sort modes"),
         Line::from("  v             Toggle GPU visibility"),
+        Line::from("  m             Toggle timeline mode (Line/Scatter)"),
+        Line::from("  n             Cycle smoothing (None/Light/Medium/Heavy)"),
         Line::from("  K             Kill selected process (with confirmation)"),
         Line::from("  /             Enter filter mode"),
         Line::from("  +/=           Scroll timeline forward (newer data)"),
