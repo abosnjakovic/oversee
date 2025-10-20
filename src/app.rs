@@ -30,6 +30,7 @@ pub struct App {
     pub gpu_core_histories: Vec<VecDeque<f32>>,
     pub gpu_overall_history: VecDeque<f32>,
     pub memory_monitor: MemoryMonitor,
+    pub memory_usage_history: VecDeque<f32>,
     pub gpu_visible: bool,
     pub selected_process: usize,
     pub table_state: TableState,
@@ -72,6 +73,7 @@ impl App {
                 .collect(),
             gpu_overall_history: VecDeque::with_capacity(MAX_CPU_HISTORY),
             memory_monitor: MemoryMonitor::new(),
+            memory_usage_history: VecDeque::with_capacity(MAX_CPU_HISTORY),
             gpu_visible: true, // Show GPU by default if available
             selected_process: 0,
             table_state,
@@ -176,6 +178,13 @@ impl App {
     fn update_memory_data(&mut self) {
         if !self.paused {
             self.memory_monitor.refresh();
+
+            // Track memory usage percentage history
+            let memory_info = self.memory_monitor.get_memory_info();
+            self.memory_usage_history.push_back(memory_info.memory_usage_percentage() as f32);
+            if self.memory_usage_history.len() > MAX_CPU_HISTORY {
+                self.memory_usage_history.pop_front();
+            }
         }
     }
 
