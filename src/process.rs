@@ -216,7 +216,7 @@ impl ProcessMonitor {
         }
     }
 
-    pub fn refresh(&mut self) {
+    pub fn refresh(&mut self, include_ports: bool) {
         // Refresh process information
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::All,
@@ -227,8 +227,12 @@ impl ProcessMonitor {
                 .with_user(UpdateKind::Always),
         );
 
-        // Get port information for all processes
-        let port_map = get_process_ports();
+        // Get port information for all processes (expensive operation - only when requested)
+        let port_map = if include_ports {
+            get_process_ports()
+        } else {
+            HashMap::new()
+        };
 
         // Convert to our ProcessInfo format
         self.processes = self

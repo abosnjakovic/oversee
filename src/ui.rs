@@ -299,30 +299,8 @@ fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
         height: area.height.saturating_sub(1),
     };
 
-    // Calculate CPU average data
-    let cpu_history: Vec<f32> = if !app.cpu_core_histories.is_empty() {
-        let max_len = app
-            .cpu_core_histories
-            .iter()
-            .map(|h| h.len())
-            .max()
-            .unwrap_or(0);
-        (0..max_len)
-            .map(|i| {
-                let mut total = 0.0f32;
-                let mut count = 0;
-                for core_history in &app.cpu_core_histories {
-                    if let Some(&usage) = core_history.get(i) {
-                        total += usage;
-                        count += 1;
-                    }
-                }
-                if count > 0 { total / count as f32 } else { 0.0 }
-            })
-            .collect()
-    } else {
-        vec![]
-    };
+    // Use cached CPU average data (computed in update_cpu_data)
+    let cpu_history: Vec<f32> = app.get_cpu_average_history().iter().copied().collect();
 
     // Get GPU history
     let gpu_history: Vec<f32> = app.gpu_overall_history.iter().copied().collect();
@@ -481,24 +459,6 @@ fn apply_moving_average(data: &[f32], window_size: usize) -> Vec<f32> {
         let sum: f32 = data[start..end].iter().sum();
         let count = (end - start) as f32;
         smoothed.push(sum / count);
-    }
-
-    smoothed
-}
-
-/// Apply exponential moving average smoothing
-/// alpha: smoothing factor (0.0-1.0), higher = less smoothing
-fn apply_exponential_smoothing(data: &[f32], alpha: f32) -> Vec<f32> {
-    if data.is_empty() {
-        return data.to_vec();
-    }
-
-    let mut smoothed = Vec::with_capacity(data.len());
-    let mut ema = data[0]; // Start with first value
-
-    for &value in data.iter() {
-        ema = alpha * value + (1.0 - alpha) * ema;
-        smoothed.push(ema);
     }
 
     smoothed

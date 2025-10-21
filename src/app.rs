@@ -46,9 +46,13 @@ pub struct App {
     pub help_mode: bool,
     pub timeline_mode: TimelineMode,
     pub smoothing_mode: SmoothingMode,
+    // Cached CPU average for performance
+    cpu_average_history: VecDeque<f32>,
+    // Update timers
     last_cpu_update: Instant,
     last_process_update: Instant,
     last_memory_update: Instant,
+    last_port_update: Instant,
 }
 
 impl App {
@@ -89,16 +93,18 @@ impl App {
             help_mode: false,
             timeline_mode: TimelineMode::Line,
             smoothing_mode: SmoothingMode::Heavy,
+            cpu_average_history: VecDeque::with_capacity(MAX_CPU_HISTORY),
             last_cpu_update: Instant::now(),
             last_process_update: Instant::now(),
             last_memory_update: Instant::now(),
+            last_port_update: Instant::now(),
         };
 
         // Initialize with some data
         app.update_cpu_data();
         app.update_gpu_data();
         app.update_memory_data();
-        app.update_process_data();
+        app.update_process_data(true); // Include ports on initial load
 
         app
     }
@@ -122,10 +128,18 @@ impl App {
             needs_render = true;
         }
 
-        // Update process data every 1 second (less frequent for performance)
+        // Update process data every 1 second (without expensive port collection)
         if now.duration_since(self.last_process_update) >= Duration::from_secs(1) {
-            self.update_process_data();
+            self.update_process_data(false);
             self.last_process_update = now;
+            needs_render = true;
+        }
+
+        // Update port data every 5 seconds (expensive lsof operation)
+        if now.duration_since(self.last_port_update) >= Duration::from_secs(5) {
+            self.update_process_data(true);
+            self.last_port_update = now;
+            self.last_process_update = now; // Reset to avoid immediate duplicate refresh
             needs_render = true;
         }
 
@@ -146,6 +160,19 @@ impl App {
                     if self.cpu_core_histories[i].len() > MAX_CPU_HISTORY {
                         self.cpu_core_histories[i].pop_front();
                     }
+                }
+            }
+
+            // Calculate and store CPU average
+            let cpu_count = cpu_usages.len();
+            if cpu_count > 0 {
+                let total: f32 = cpu_usages.iter().map(|(_, usage)| usage).sum();
+                let average = total / cpu_count as f32;
+                self.cpu_average_history.push_back(average);
+
+                // Keep only the last MAX_CPU_HISTORY points
+                if self.cpu_average_history.len() > MAX_CPU_HISTORY {
+                    self.cpu_average_history.pop_front();
                 }
             }
         }
@@ -188,9 +215,9 @@ impl App {
         }
     }
 
-    fn update_process_data(&mut self) {
+    fn update_process_data(&mut self, include_ports: bool) {
         if !self.paused {
-            self.process_monitor.refresh();
+            self.process_monitor.refresh(include_ports);
 
             // Re-apply filter after refreshing processes
             self.update_filtered_indices();
@@ -436,6 +463,10 @@ impl App {
 
     pub fn get_smoothing_mode(&self) -> SmoothingMode {
         self.smoothing_mode
+    }
+
+    pub fn get_cpu_average_history(&self) -> &VecDeque<f32> {
+        &self.cpu_average_history
     }
 
     fn kill_process(&self, pid: u32) {
