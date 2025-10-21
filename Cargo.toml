@@ -1,6 +1,6 @@
 [package]
 name = "oversee"
-version = "0.1.4"
+version = "0.1.8"
 edition = "2024"
 description = "A modern system monitor for macOS with Apple Silicon GPU support"
 license = "MIT"
