@@ -1343,18 +1343,17 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
-        Line::from("Oversee implements Apple-inspired memory pressure calculation:"),
+        Line::from("Oversee uses macOS's native memory pressure reporting:"),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "Calculation Formula:",
+            "How it works:",
             Style::default()
                 .fg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         )]),
-        Line::from("  1. Base: free_pct = (free_memory / total_memory) × 100"),
-        Line::from("  2. Swap adjustment: If swap_usage > 10%:"),
-        Line::from("     adjusted_free = free_pct × (1 - (swap_usage - 10) / 100)"),
-        Line::from("  3. Otherwise: adjusted_free = free_pct"),
+        Line::from("  Queries kern.memorystatus_vm_pressure_level sysctl"),
+        Line::from("  Same metric used by Activity Monitor for accuracy"),
+        Line::from("  Considers file cache, compression, and memory demand"),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Pressure Levels:",
@@ -1364,32 +1363,29 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         )]),
         Line::from(vec![
             Span::styled(
-                "  • Green: ",
+                "  • Green (Normal): ",
                 Style::default()
                     .fg(Color::Green)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Adjusted free ≥ 50% - Efficient RAM usage"),
+            Span::raw("Adequate memory, efficient operation"),
         ]),
         Line::from(vec![
             Span::styled(
-                "  • Yellow: ",
+                "  • Yellow (Warning): ",
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD),
             ),
-            Span::raw("30% ≤ Adjusted free < 50% - Memory compression active"),
+            Span::raw("Some pressure, may use compression"),
         ]),
         Line::from(vec![
             Span::styled(
-                "  • Red: ",
+                "  • Red (Critical): ",
                 Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
             ),
-            Span::raw("Adjusted free < 30% - Heavy swap usage"),
+            Span::raw("Severe pressure, performance impacted"),
         ]),
-        Line::from(""),
-        Line::from("The memory bar uses gradient colors: green (0-30%) → yellow (30-50%)"),
-        Line::from("→ orange (50-70%) → red (70-100%) to show usage progression."),
         Line::from(""),
         Line::from(vec![
             Span::styled("Note: ", Style::default().fg(Color::Cyan)),

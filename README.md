@@ -13,10 +13,12 @@ Why? I wanted to view cpu AND gpu cores. I wanted memory pressure and not just u
 - **Vim-style controls**: `j/k` for navigation, `g/G` for top/bottom, `/` for search
 
 ### Memory Pressure Algorithm
-Implements Apple's memory pressure calculation:
-- **Green (Normal)**: 50-100% memory available - efficient RAM usage
-- **Yellow (Warning)**: 30-50% memory available - using compression
-- **Red (Critical)**: 0-30% memory available - heavy swap usage
+Uses macOS's native memory pressure reporting via `kern.memorystatus_vm_pressure_level`:
+- **Green (Normal)**: System has adequate memory and is operating efficiently
+- **Yellow (Warning)**: System is under some memory pressure, may be using compression
+- **Red (Critical)**: System is under severe memory pressure, performance may be impacted
+
+This matches Activity Monitor's behavior exactly, as both use the same kernel metric.
 
 ### Understanding macOS Memory Management
 
