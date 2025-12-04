@@ -7,6 +7,7 @@ Why? I wanted to view cpu AND gpu cores. I wanted memory pressure and not just u
 ## Features
 
 - **Process Management**: Detailed process list with CPU, GPU, memory usage, and user information
+- **GPU Monitoring**: Real-time GPU utilisation via powermetrics (requires sudo)
 - **Timeline Visualization**: Smooth braille character graphs showing system activity over time
 - **Memory Pressure**: Green/Yellow/Red pressure indicators matching Activity Monitor
 - **Smart Filtering**: Press `/` to filter processes by name, port or user (vim-style)
@@ -19,6 +20,9 @@ Uses macOS's native memory pressure reporting via `kern.memorystatus_vm_pressure
 - **Red (Critical)**: System is under severe memory pressure, performance may be impacted
 
 This matches Activity Monitor's behavior exactly, as both use the same kernel metric.
+
+### GPU Monitoring
+GPU utilisation is obtained via macOS `powermetrics` which requires root access. Run oversee with `sudo` for accurate GPU metrics. Without sudo, GPU shows 0%.
 
 ### Understanding macOS Memory Management
 
@@ -62,6 +66,15 @@ cargo build --release
 ```bash
 cargo run --release
 ```
+
+### Running with GPU Metrics
+For accurate GPU utilisation data, run with sudo:
+```bash
+sudo cargo run --release
+# or after building
+sudo ./target/release/oversee
+```
+Without sudo, GPU metrics will show 0% (requires access to powermetrics).
 
 ## Usage
 

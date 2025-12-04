@@ -32,6 +32,8 @@ impl Default for GpuInfo {
     }
 }
 
+use std::time::Instant;
+
 #[derive(Debug)]
 pub struct GpuMonitor {
     current_info: GpuInfo,
@@ -39,6 +41,9 @@ pub struct GpuMonitor {
     available: bool,
     core_count: usize,
     chip_name: String,
+    // Cache powermetrics result to avoid calling it too frequently
+    cached_utilization: f32,
+    last_powermetrics_call: Option<Instant>,
 }
 
 impl GpuMonitor {
@@ -63,6 +68,8 @@ impl GpuMonitor {
             available,
             core_count,
             chip_name,
+            cached_utilization: 0.0,
+            last_powermetrics_call: None,
         }
     }
 
@@ -175,35 +182,36 @@ impl GpuMonitor {
         ("Unknown".to_string(), 8)
     }
 
-    // Generate GPU info with per-core data
-    fn get_gpu_info(&self) -> GpuInfo {
-        use std::time::SystemTime;
+    // Get real GPU info from powermetrics (requires sudo)
+    fn get_gpu_info(&mut self) -> GpuInfo {
+        // Only call powermetrics every 2 seconds to avoid UI lag
+        let should_refresh = match self.last_powermetrics_call {
+            None => true,
+            Some(last) => last.elapsed().as_secs() >= 2,
+        };
 
-        let now = SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_secs();
+        if should_refresh {
+            if let Some(util) = Self::get_gpu_utilization_from_powermetrics() {
+                self.cached_utilization = util;
+            }
+            self.last_powermetrics_call = Some(Instant::now());
+        }
 
-        // Generate base GPU utilization
-        let base_util = ((now % 100) as f32) * 0.8; // 0-80%
-        let variation = ((now % 10) as f32 - 5.0) * 5.0; // ±25%
-        let overall_utilization = (base_util + variation).clamp(0.0, 100.0);
+        let overall_utilization = self.cached_utilization;
 
-        // Generate per-core utilization with realistic variations
+        // Generate per-core utilization based on overall
+        // Apple Silicon doesn't expose per-core GPU stats, so we estimate
         let mut cores = Vec::with_capacity(self.core_count);
         for i in 0..self.core_count {
-            // Each core has some individual variation
-            let core_seed = (now + i as u64) % 50;
-            let core_variation = (core_seed as f32 - 25.0) * 2.0; // ±50%
-
-            // Some cores are more active (e.g., first few cores handle more work)
-            let core_bias = if i < self.core_count / 2 {
-                10.0 // Performance cores get more work
+            // Distribute load across cores with some variation
+            // First half of cores (performance) get slightly more
+            let core_factor = if i < self.core_count / 2 {
+                1.0 + (i as f32 * 0.02) // Slight increase for first cores
             } else {
-                -5.0 // Efficiency cores get less work
+                0.9 - ((i - self.core_count / 2) as f32 * 0.02) // Slight decrease
             };
 
-            let core_util = (overall_utilization + core_variation + core_bias).clamp(0.0, 100.0);
+            let core_util = (overall_utilization * core_factor).clamp(0.0, 100.0);
 
             cores.push(GpuCoreInfo {
                 utilization: core_util,
@@ -215,6 +223,77 @@ impl GpuMonitor {
             overall_utilization,
             core_count: self.core_count,
             chip_name: self.chip_name.clone(),
+        }
+    }
+
+    // Query powermetrics for GPU utilization (requires root)
+    fn get_gpu_utilization_from_powermetrics() -> Option<f32> {
+        use std::process::Command;
+
+        // Run powermetrics to get GPU stats
+        // -i 500 = 500ms sample, -n 1 = one sample only
+        // Needs longer sample time to get accurate readings
+        let output = Command::new("powermetrics")
+            .args(["--sampler", "gpu_power", "-i", "500", "-n", "1"])
+            .output()
+            .ok()?;
+
+        if !output.status.success() {
+            return None; // Probably not running as root
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+
+        // Parse "GPU HW active residency: XX.XX%" or similar patterns
+        for line in stdout.lines() {
+            let line_lower = line.to_lowercase();
+
+            // Look for GPU active residency
+            if line_lower.contains("gpu") && line_lower.contains("active") && line_lower.contains("residency") {
+                // Extract percentage value
+                if let Some(pct) = Self::extract_percentage(line) {
+                    return Some(pct);
+                }
+            }
+
+            // Alternative: "GPU Power" percentage
+            if line_lower.contains("gpu") && line.contains("%") {
+                if let Some(pct) = Self::extract_percentage(line) {
+                    return Some(pct);
+                }
+            }
+        }
+
+        None
+    }
+
+    // Extract percentage value from a line like "GPU HW active residency:   5.23%"
+    fn extract_percentage(line: &str) -> Option<f32> {
+        // Find the percentage value (number followed by %)
+        let mut num_start = None;
+        let mut num_end = None;
+
+        for (i, c) in line.chars().enumerate() {
+            if c.is_ascii_digit() || c == '.' {
+                if num_start.is_none() {
+                    num_start = Some(i);
+                }
+                num_end = Some(i + 1);
+            } else if c == '%' && num_end.is_some() {
+                // Found the percentage
+                break;
+            } else if num_start.is_some() && !c.is_ascii_digit() && c != '.' {
+                // Reset if we hit non-numeric before %
+                num_start = None;
+                num_end = None;
+            }
+        }
+
+        if let (Some(start), Some(end)) = (num_start, num_end) {
+            let num_str: String = line.chars().skip(start).take(end - start).collect();
+            num_str.parse::<f32>().ok()
+        } else {
+            None
         }
     }
 }
