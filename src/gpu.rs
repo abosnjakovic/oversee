@@ -260,11 +260,12 @@ impl GpuMonitor {
             }
 
             // Alternative: "GPU Power" percentage
-            if line_lower.contains("gpu")
-                && line.contains("%")
-                && let Some(pct) = Self::extract_percentage(line)
-            {
-                return Some(pct);
+            // Note: Nested if required for MSRV compatibility (let chains are unstable)
+            #[allow(clippy::collapsible_if)]
+            if line_lower.contains("gpu") && line.contains("%") {
+                if let Some(pct) = Self::extract_percentage(line) {
+                    return Some(pct);
+                }
             }
         }
 
