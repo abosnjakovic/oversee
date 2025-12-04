@@ -249,7 +249,10 @@ impl GpuMonitor {
             let line_lower = line.to_lowercase();
 
             // Look for GPU active residency
-            if line_lower.contains("gpu") && line_lower.contains("active") && line_lower.contains("residency") {
+            if line_lower.contains("gpu")
+                && line_lower.contains("active")
+                && line_lower.contains("residency")
+            {
                 // Extract percentage value
                 if let Some(pct) = Self::extract_percentage(line) {
                     return Some(pct);

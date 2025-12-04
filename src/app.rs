@@ -16,9 +16,9 @@ pub enum TimelineMode {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SmoothingMode {
     None,
-    Light,    // 3-point moving average
-    Medium,   // 5-point moving average
-    Heavy,    // 8-point moving average
+    Light,  // 3-point moving average
+    Medium, // 5-point moving average
+    Heavy,  // 8-point moving average
 }
 
 #[derive(Debug)]
@@ -208,7 +208,8 @@ impl App {
 
             // Track memory usage percentage history
             let memory_info = self.memory_monitor.get_memory_info();
-            self.memory_usage_history.push_back(memory_info.memory_usage_percentage() as f32);
+            self.memory_usage_history
+                .push_back(memory_info.memory_usage_percentage() as f32);
             if self.memory_usage_history.len() > MAX_CPU_HISTORY {
                 self.memory_usage_history.pop_front();
             }

@@ -1032,8 +1032,11 @@ fn render_oscilloscope_timeline(
         let cpu_label_y = area.y + cpu_avg_char_row as u16;
 
         // Render "C" label for CPU in cyan
-        let cpu_label = Paragraph::new("C")
-            .style(Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD));
+        let cpu_label = Paragraph::new("C").style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        );
         f.render_widget(
             cpu_label,
             Rect {
@@ -1052,8 +1055,11 @@ fn render_oscilloscope_timeline(
         let gpu_label_y = area.y + gpu_avg_char_row as u16;
 
         // Render "G" label for GPU in magenta
-        let gpu_label = Paragraph::new("G")
-            .style(Style::default().fg(Color::Magenta).add_modifier(Modifier::BOLD));
+        let gpu_label = Paragraph::new("G").style(
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        );
         f.render_widget(
             gpu_label,
             Rect {
@@ -1072,8 +1078,11 @@ fn render_oscilloscope_timeline(
         let memory_label_y = area.y + memory_avg_char_row as u16;
 
         // Render "M" label for Memory in green
-        let memory_label = Paragraph::new("M")
-            .style(Style::default().fg(Color::Green).add_modifier(Modifier::BOLD));
+        let memory_label = Paragraph::new("M").style(
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        );
         f.render_widget(
             memory_label,
             Rect {

@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
-use sysinfo::System;
 use std::mem;
+use sysinfo::System;
 
 // FFI declaration for sysctlbyname
 unsafe extern "C" {
