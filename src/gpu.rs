@@ -260,10 +260,11 @@ impl GpuMonitor {
             }
 
             // Alternative: "GPU Power" percentage
-            if line_lower.contains("gpu") && line.contains("%") {
-                if let Some(pct) = Self::extract_percentage(line) {
-                    return Some(pct);
-                }
+            if line_lower.contains("gpu")
+                && line.contains("%")
+                && let Some(pct) = Self::extract_percentage(line)
+            {
+                return Some(pct);
             }
         }
 

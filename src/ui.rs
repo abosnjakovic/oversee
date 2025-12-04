@@ -448,11 +448,7 @@ fn apply_moving_average(data: &[f32], window_size: usize) -> Vec<f32> {
 
     for i in 0..data.len() {
         // Calculate the window bounds
-        let start = if i >= window_size / 2 {
-            i - window_size / 2
-        } else {
-            0
-        };
+        let start = i.saturating_sub(window_size / 2);
         let end = (i + window_size / 2 + 1).min(data.len());
 
         // Calculate average of window
@@ -550,9 +546,9 @@ fn get_braille_line(col: usize, start_row: usize, end_row: usize) -> char {
         [64, 128], // Row 3
     ];
 
-    for row in min_row..=max_row.min(3) {
+    for dot_row in dot_values.iter().take(max_row.min(3) + 1).skip(min_row) {
         if col < 2 {
-            value += dot_values[row][col];
+            value += dot_row[col];
         }
     }
 
@@ -561,6 +557,7 @@ fn get_braille_line(col: usize, start_row: usize, end_row: usize) -> char {
 
 /// Render oscilloscope-style timeline with waveform visualization
 /// Supports both line and scatter modes with configurable smoothing
+#[allow(clippy::too_many_arguments)]
 fn render_oscilloscope_timeline(
     f: &mut Frame,
     area: Rect,

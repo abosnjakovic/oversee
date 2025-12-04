@@ -37,6 +37,9 @@ help:
 	@echo "  make debug-crates    - Debug crates.io publishing issues"
 	@echo "  make debug-homebrew  - Debug Homebrew formula issues"
 	@echo ""
+	@echo "$(GREEN)Development:$(NC)"
+	@echo "  make lint            - Format code and run clippy"
+	@echo ""
 	@echo "$(GREEN)Utilities:$(NC)"
 	@echo "  make clean           - Clean build artifacts"
 	@echo "  make check-env       - Verify environment variables are set"
@@ -133,6 +136,15 @@ clean:
 	@echo "$(BLUE)Cleaning build artifacts...$(NC)"
 	cargo clean
 	@echo "$(GREEN)✓ Cleaned$(NC)"
+
+# Lint - format and check code
+.PHONY: lint
+lint:
+	@echo "$(BLUE)Formatting code...$(NC)"
+	cargo fmt
+	@echo "$(BLUE)Running clippy...$(NC)"
+	cargo clippy -- -D warnings
+	@echo "$(GREEN)✓ Lint passed$(NC)"
 
 # Create release archives (for testing Homebrew formula)
 .PHONY: create-archives
