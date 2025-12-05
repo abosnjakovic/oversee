@@ -1,4 +1,4 @@
-use crate::app::{App, SmoothingMode, TimelineMode};
+use crate::app::App;
 use crate::process::{ConnectionState, PortInfo, SortMode};
 use ratatui::{
     Frame,
@@ -246,9 +246,9 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
     } else if app.filter_mode {
         "Type to filter | Enter: Apply | ESC: Cancel"
     } else if app.is_paused() {
-        "[PAUSED] Space: Resume | q: Quit | ↑↓: Nav | K: Kill | s: Sort | /: Filter | +/-: Time | m: Mode | n: Smooth | g/G: Top/Bot | v: GPU"
+        "[PAUSED] Space: Resume | q: Quit | ↑↓: Nav | K: Kill | s: Sort | /: Filter | +/-: Time | g/G: Top/Bot | v: GPU"
     } else {
-        "Space: Pause | q: Quit | ↑↓: Nav | K: Kill | s: Sort | /: Filter | +/-: Time | m: Mode | n: Smooth | g/G: Top/Bot | v: GPU"
+        "Space: Pause | q: Quit | ↑↓: Nav | K: Kill | s: Sort | /: Filter | +/-: Time | g/G: Top/Bot | v: GPU"
     };
 
     // Render help in the bottom chunk (pinned to bottom)
@@ -260,23 +260,8 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
-    // Render title without border - include mode and smoothing in title
-    let mode_text = match app.get_timeline_mode() {
-        TimelineMode::Line => "Line",
-        TimelineMode::Scatter => "Scatter",
-    };
-    let smoothing_text = match app.get_smoothing_mode() {
-        SmoothingMode::None => "Raw",
-        SmoothingMode::Light => "Light",
-        SmoothingMode::Medium => "Medium",
-        SmoothingMode::Heavy => "Heavy",
-    };
-    let title_text = format!(
-        "System Timeline ({}) [{}] {{{}}}",
-        app.get_timeline_position_text(),
-        mode_text,
-        smoothing_text
-    );
+    // Render title without border
+    let title_text = format!("System Timeline ({})", app.get_timeline_position_text());
     let title = Paragraph::new(title_text).style(
         Style::default()
             .fg(Color::White)
@@ -308,7 +293,7 @@ fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
     // Get memory history
     let memory_history: Vec<f32> = app.memory_usage_history.iter().copied().collect();
 
-    // Render oscilloscope-style timeline with smoothing and memory
+    // Render oscilloscope-style timeline
     render_oscilloscope_timeline(
         f,
         inner,
@@ -317,8 +302,6 @@ fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
         &memory_history,
         app.is_gpu_visible(),
         app.get_timeline_offset(),
-        app.get_timeline_mode(),
-        app.get_smoothing_mode(),
     );
 }
 
@@ -437,29 +420,6 @@ fn render_gpu_cores_panel(f: &mut Frame, app: &App, area: Rect) {
     }
 }
 
-/// Apply moving average smoothing to data
-/// window_size: number of points to average (e.g., 3, 5, 8)
-fn apply_moving_average(data: &[f32], window_size: usize) -> Vec<f32> {
-    if data.is_empty() || window_size == 0 {
-        return data.to_vec();
-    }
-
-    let mut smoothed = Vec::with_capacity(data.len());
-
-    for i in 0..data.len() {
-        // Calculate the window bounds
-        let start = i.saturating_sub(window_size / 2);
-        let end = (i + window_size / 2 + 1).min(data.len());
-
-        // Calculate average of window
-        let sum: f32 = data[start..end].iter().sum();
-        let count = (end - start) as f32;
-        smoothed.push(sum / count);
-    }
-
-    smoothed
-}
-
 /// Interpolate between data points to create denser visualization
 /// Creates `factor` intermediate points between each pair of data points
 fn interpolate_data(data: &[f32], factor: usize) -> Vec<f32> {
@@ -490,16 +450,6 @@ fn interpolate_data(data: &[f32], factor: usize) -> Vec<f32> {
     }
 
     interpolated
-}
-
-/// Apply smoothing based on mode
-fn apply_smoothing(data: &[f32], mode: SmoothingMode) -> Vec<f32> {
-    match mode {
-        SmoothingMode::None => data.to_vec(),
-        SmoothingMode::Light => apply_moving_average(data, 3),
-        SmoothingMode::Medium => apply_moving_average(data, 5),
-        SmoothingMode::Heavy => apply_moving_average(data, 8),
-    }
 }
 
 /// Helper function to get a braille character with a dot at specific position
@@ -556,8 +506,6 @@ fn get_braille_line(col: usize, start_row: usize, end_row: usize) -> char {
 }
 
 /// Render oscilloscope-style timeline with waveform visualization
-/// Supports both line and scatter modes with configurable smoothing
-#[allow(clippy::too_many_arguments)]
 fn render_oscilloscope_timeline(
     f: &mut Frame,
     area: Rect,
@@ -566,8 +514,6 @@ fn render_oscilloscope_timeline(
     memory_history: &[f32],
     show_gpu: bool,
     timeline_offset: usize,
-    mode: TimelineMode,
-    smoothing: SmoothingMode,
 ) {
     let available_width = area.width as usize;
     let available_height = area.height as usize;
@@ -619,16 +565,11 @@ fn render_oscilloscope_timeline(
         &[]
     };
 
-    // Apply smoothing to the data
-    let cpu_smoothed = apply_smoothing(cpu_points, smoothing);
-    let gpu_smoothed = apply_smoothing(gpu_points, smoothing);
-    let memory_smoothed = apply_smoothing(memory_points, smoothing);
-
     // Apply interpolation for denser visualization (4x density)
     let interpolation_factor = 4;
-    let cpu_dense = interpolate_data(&cpu_smoothed, interpolation_factor);
-    let gpu_dense = interpolate_data(&gpu_smoothed, interpolation_factor);
-    let memory_dense = interpolate_data(&memory_smoothed, interpolation_factor);
+    let cpu_dense = interpolate_data(cpu_points, interpolation_factor);
+    let gpu_dense = interpolate_data(gpu_points, interpolation_factor);
+    let memory_dense = interpolate_data(memory_points, interpolation_factor);
 
     // Limit display width to available screen space
     // Each character cell has 2 braille columns, so we need 2 data points per character
@@ -714,79 +655,63 @@ fn render_oscilloscope_timeline(
         let memory_y = area.y + memory_char_row as u16;
 
         // Render CPU signal with vertical line connections
-        if mode == TimelineMode::Line {
-            if let Some((prev_x, prev_y, prev_char_row, prev_sub_row)) = prev_cpu_pos {
-                // Draw vertical connecting lines if positions differ significantly
-                if prev_x == x && prev_y != cpu_y {
-                    // Same column, different rows - draw vertical connection
-                    let (start_y, end_y) = if prev_y < cpu_y {
-                        (prev_y, cpu_y)
-                    } else {
-                        (cpu_y, prev_y)
-                    };
-
-                    for y in start_y..=end_y {
-                        let row_idx = (y - area.y) as usize;
-                        if row_idx < char_height {
-                            // Fill with vertical line character
-                            let connector = if y == start_y || y == end_y {
-                                get_braille_dot(
-                                    braille_col,
-                                    if y == prev_y {
-                                        prev_sub_row
-                                    } else {
-                                        cpu_sub_row
-                                    },
-                                )
-                            } else {
-                                // Middle section - full vertical line
-                                '⡇' // Vertical braille line
-                            };
-
-                            let cell = Paragraph::new(connector.to_string())
-                                .style(Style::default().fg(Color::Cyan));
-                            f.render_widget(
-                                cell,
-                                Rect {
-                                    x,
-                                    y,
-                                    width: 1,
-                                    height: 1,
-                                },
-                            );
-                        }
-                    }
-                } else if prev_char_row == cpu_char_row && braille_col == 1 {
-                    // Same character row, draw connecting line within character
-                    let cpu_char = get_braille_line(braille_col, prev_sub_row, cpu_sub_row);
-                    let cell = Paragraph::new(cpu_char.to_string())
-                        .style(Style::default().fg(Color::Cyan));
-                    f.render_widget(
-                        cell,
-                        Rect {
-                            x,
-                            y: cpu_y,
-                            width: 1,
-                            height: 1,
-                        },
-                    );
+        if let Some((prev_x, prev_y, prev_char_row, prev_sub_row)) = prev_cpu_pos {
+            // Draw vertical connecting lines if positions differ significantly
+            if prev_x == x && prev_y != cpu_y {
+                // Same column, different rows - draw vertical connection
+                let (start_y, end_y) = if prev_y < cpu_y {
+                    (prev_y, cpu_y)
                 } else {
-                    // Just a dot
-                    let cpu_char = get_braille_dot(braille_col, cpu_sub_row);
-                    let cell = Paragraph::new(cpu_char.to_string())
-                        .style(Style::default().fg(Color::Cyan));
-                    f.render_widget(
-                        cell,
-                        Rect {
-                            x,
-                            y: cpu_y,
-                            width: 1,
-                            height: 1,
-                        },
-                    );
+                    (cpu_y, prev_y)
+                };
+
+                for y in start_y..=end_y {
+                    let row_idx = (y - area.y) as usize;
+                    if row_idx < char_height {
+                        // Fill with vertical line character
+                        let connector = if y == start_y || y == end_y {
+                            get_braille_dot(
+                                braille_col,
+                                if y == prev_y {
+                                    prev_sub_row
+                                } else {
+                                    cpu_sub_row
+                                },
+                            )
+                        } else {
+                            // Middle section - full vertical line
+                            '⡇' // Vertical braille line
+                        };
+
+                        let cell = Paragraph::new(connector.to_string())
+                            .style(Style::default().fg(Color::Cyan));
+                        f.render_widget(
+                            cell,
+                            Rect {
+                                x,
+                                y,
+                                width: 1,
+                                height: 1,
+                            },
+                        );
+                    }
                 }
+            } else if prev_char_row == cpu_char_row && braille_col == 1 {
+                // Same character row, draw connecting line within character
+                let cpu_char = get_braille_line(braille_col, prev_sub_row, cpu_sub_row);
+                let cell =
+                    Paragraph::new(cpu_char.to_string()).style(Style::default().fg(Color::Cyan));
+                f.render_widget(
+                    cell,
+                    Rect {
+                        x,
+                        y: cpu_y,
+                        width: 1,
+                        height: 1,
+                    },
+                );
             } else {
-                // First point
+                // Just a dot
                 let cpu_char = get_braille_dot(braille_col, cpu_sub_row);
                 let cell =
                     Paragraph::new(cpu_char.to_string()).style(Style::default().fg(Color::Cyan));
@@ -801,7 +726,7 @@ fn render_oscilloscope_timeline(
                 );
             }
         } else {
-            // Scatter mode - just dots
+            // First point
             let cpu_char = get_braille_dot(braille_col, cpu_sub_row);
             let cell = Paragraph::new(cpu_char.to_string()).style(Style::default().fg(Color::Cyan));
             f.render_widget(
@@ -817,72 +742,57 @@ fn render_oscilloscope_timeline(
 
         // Render GPU signal if visible
         if show_gpu && gpu_char_row < char_height {
-            if mode == TimelineMode::Line {
-                if let Some((prev_x, prev_y, prev_char_row, prev_sub_row)) = prev_gpu_pos {
-                    // Draw vertical connecting lines for GPU
-                    if prev_x == x && prev_y != gpu_y {
-                        let (start_y, end_y) = if prev_y < gpu_y {
-                            (prev_y, gpu_y)
-                        } else {
-                            (gpu_y, prev_y)
-                        };
-
-                        for y in start_y..=end_y {
-                            let row_idx = (y - area.y) as usize;
-                            if row_idx < char_height {
-                                let connector = if y == start_y || y == end_y {
-                                    get_braille_dot(
-                                        braille_col,
-                                        if y == prev_y {
-                                            prev_sub_row
-                                        } else {
-                                            gpu_sub_row
-                                        },
-                                    )
-                                } else {
-                                    '⡇'
-                                };
-
-                                let cell = Paragraph::new(connector.to_string())
-                                    .style(Style::default().fg(Color::Magenta));
-                                f.render_widget(
-                                    cell,
-                                    Rect {
-                                        x,
-                                        y,
-                                        width: 1,
-                                        height: 1,
-                                    },
-                                );
-                            }
-                        }
-                    } else if prev_char_row == gpu_char_row && braille_col == 1 {
-                        let gpu_char = get_braille_line(braille_col, prev_sub_row, gpu_sub_row);
-                        let cell = Paragraph::new(gpu_char.to_string())
-                            .style(Style::default().fg(Color::Magenta));
-                        f.render_widget(
-                            cell,
-                            Rect {
-                                x,
-                                y: gpu_y,
-                                width: 1,
-                                height: 1,
-                            },
-                        );
+            if let Some((prev_x, prev_y, prev_char_row, prev_sub_row)) = prev_gpu_pos {
+                // Draw vertical connecting lines for GPU
+                if prev_x == x && prev_y != gpu_y {
+                    let (start_y, end_y) = if prev_y < gpu_y {
+                        (prev_y, gpu_y)
                     } else {
-                        let gpu_char = get_braille_dot(braille_col, gpu_sub_row);
-                        let cell = Paragraph::new(gpu_char.to_string())
-                            .style(Style::default().fg(Color::Magenta));
-                        f.render_widget(
-                            cell,
-                            Rect {
-                                x,
-                                y: gpu_y,
-                                width: 1,
-                                height: 1,
-                            },
-                        );
+                        (gpu_y, prev_y)
+                    };
+
+                    for y in start_y..=end_y {
+                        let row_idx = (y - area.y) as usize;
+                        if row_idx < char_height {
+                            let connector = if y == start_y || y == end_y {
+                                get_braille_dot(
+                                    braille_col,
+                                    if y == prev_y {
+                                        prev_sub_row
+                                    } else {
+                                        gpu_sub_row
+                                    },
+                                )
+                            } else {
+                                '⡇'
+                            };
+
+                            let cell = Paragraph::new(connector.to_string())
+                                .style(Style::default().fg(Color::Magenta));
+                            f.render_widget(
+                                cell,
+                                Rect {
+                                    x,
+                                    y,
+                                    width: 1,
+                                    height: 1,
+                                },
+                            );
+                        }
                     }
+                } else if prev_char_row == gpu_char_row && braille_col == 1 {
+                    let gpu_char = get_braille_line(braille_col, prev_sub_row, gpu_sub_row);
+                    let cell = Paragraph::new(gpu_char.to_string())
+                        .style(Style::default().fg(Color::Magenta));
+                    f.render_widget(
+                        cell,
+                        Rect {
+                            x,
+                            y: gpu_y,
+                            width: 1,
+                            height: 1,
+                        },
+                    );
                 } else {
                     let gpu_char = get_braille_dot(braille_col, gpu_sub_row);
                     let cell = Paragraph::new(gpu_char.to_string())
@@ -915,73 +825,57 @@ fn render_oscilloscope_timeline(
 
         // Render memory signal (always visible)
         if memory_char_row < char_height {
-            if mode == TimelineMode::Line {
-                if let Some((prev_x, prev_y, prev_char_row, prev_sub_row)) = prev_memory_pos {
-                    // Draw vertical connecting lines for memory
-                    if prev_x == x && prev_y != memory_y {
-                        let (start_y, end_y) = if prev_y < memory_y {
-                            (prev_y, memory_y)
-                        } else {
-                            (memory_y, prev_y)
-                        };
-
-                        for y in start_y..=end_y {
-                            let row_idx = (y - area.y) as usize;
-                            if row_idx < char_height {
-                                let connector = if y == start_y || y == end_y {
-                                    get_braille_dot(
-                                        braille_col,
-                                        if y == prev_y {
-                                            prev_sub_row
-                                        } else {
-                                            memory_sub_row
-                                        },
-                                    )
-                                } else {
-                                    '⡇'
-                                };
-
-                                let cell = Paragraph::new(connector.to_string())
-                                    .style(Style::default().fg(Color::Green));
-                                f.render_widget(
-                                    cell,
-                                    Rect {
-                                        x,
-                                        y,
-                                        width: 1,
-                                        height: 1,
-                                    },
-                                );
-                            }
-                        }
-                    } else if prev_char_row == memory_char_row && braille_col == 1 {
-                        let memory_char =
-                            get_braille_line(braille_col, prev_sub_row, memory_sub_row);
-                        let cell = Paragraph::new(memory_char.to_string())
-                            .style(Style::default().fg(Color::Green));
-                        f.render_widget(
-                            cell,
-                            Rect {
-                                x,
-                                y: memory_y,
-                                width: 1,
-                                height: 1,
-                            },
-                        );
+            if let Some((prev_x, prev_y, prev_char_row, prev_sub_row)) = prev_memory_pos {
+                // Draw vertical connecting lines for memory
+                if prev_x == x && prev_y != memory_y {
+                    let (start_y, end_y) = if prev_y < memory_y {
+                        (prev_y, memory_y)
                     } else {
-                        let memory_char = get_braille_dot(braille_col, memory_sub_row);
-                        let cell = Paragraph::new(memory_char.to_string())
-                            .style(Style::default().fg(Color::Green));
-                        f.render_widget(
-                            cell,
-                            Rect {
-                                x,
-                                y: memory_y,
-                                width: 1,
-                                height: 1,
-                            },
-                        );
+                        (memory_y, prev_y)
+                    };
+
+                    for y in start_y..=end_y {
+                        let row_idx = (y - area.y) as usize;
+                        if row_idx < char_height {
+                            let connector = if y == start_y || y == end_y {
+                                get_braille_dot(
+                                    braille_col,
+                                    if y == prev_y {
+                                        prev_sub_row
+                                    } else {
+                                        memory_sub_row
+                                    },
+                                )
+                            } else {
+                                '⡇'
+                            };
+
+                            let cell = Paragraph::new(connector.to_string())
+                                .style(Style::default().fg(Color::Green));
+                            f.render_widget(
+                                cell,
+                                Rect {
+                                    x,
+                                    y,
+                                    width: 1,
+                                    height: 1,
+                                },
+                            );
+                        }
                     }
+                } else if prev_char_row == memory_char_row && braille_col == 1 {
+                    let memory_char = get_braille_line(braille_col, prev_sub_row, memory_sub_row);
+                    let cell = Paragraph::new(memory_char.to_string())
+                        .style(Style::default().fg(Color::Green));
+                    f.render_widget(
+                        cell,
+                        Rect {
+                            x,
+                            y: memory_y,
+                            width: 1,
+                            height: 1,
+                        },
+                    );
                 } else {
                     let memory_char = get_braille_dot(braille_col, memory_sub_row);
                     let cell = Paragraph::new(memory_char.to_string())
@@ -1323,8 +1217,6 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from("  Space         Pause/Resume monitoring"),
         Line::from("  s             Cycle through sort modes"),
         Line::from("  v             Toggle GPU visibility"),
-        Line::from("  m             Toggle timeline mode (Line/Scatter)"),
-        Line::from("  n             Cycle smoothing (None/Light/Medium/Heavy)"),
         Line::from("  K             Kill selected process (with confirmation)"),
         Line::from("  /             Enter filter mode"),
         Line::from("  +/=           Scroll timeline forward (newer data)"),
