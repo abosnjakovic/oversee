@@ -1,14 +1,14 @@
 class Oversee < Formula
   desc "A modern system monitor for macOS with Apple Silicon GPU support"
   homepage "https://github.com/abosnjakovic/oversee"
-  version "0.2.0"
+  version "0.2.3"
 
   if Hardware::CPU.arm?
-    url "https://github.com/abosnjakovic/oversee/releases/download/v0.2.0/oversee-0.2.0-aarch64-apple-darwin.tar.gz"
-    sha256 "e96ac62f6ae6f750947d17d07ba8163b26f4b3352e3a3cf098ae7278a2429938"
+    url "https://github.com/abosnjakovic/oversee/releases/download/0.2.3/oversee-0.2.3-aarch64-apple-darwin.tar.gz"
+    sha256 "3ca1e71bf62f759439f76aff82c1b9ce8f2fde695ea46b8e0e12d6d64b7b482f"
   else
-    url "https://github.com/abosnjakovic/oversee/releases/download/v0.2.0/oversee-0.2.0-x86_64-apple-darwin.tar.gz"
-    sha256 "a29572fc87a067fdebc4de92df3a93abdb83746799af78d0ec7c8cc09ca369d5"
+    url "https://github.com/abosnjakovic/oversee/releases/download/0.2.3/oversee-0.2.3-x86_64-apple-darwin.tar.gz"
+    sha256 "d96443841cf108776845dd85b4ec661f9e7beb68ed3f26c3cd99a3122fb0561f"
   end
 
   def install
