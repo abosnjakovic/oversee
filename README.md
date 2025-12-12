@@ -49,6 +49,11 @@ From cargo via crates.io
 cargo install oversee
 ```
 
+From brew
+```bash
+brew install abosnjakovic/oversee
+```
+
 ### Prerequisites
 - macOS (Apple Silicon or Intel)
 - Rust 1.70+ (install via [rustup](https://rustup.rs/))
