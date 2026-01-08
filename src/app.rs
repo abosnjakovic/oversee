@@ -1,7 +1,7 @@
 use crate::{cpu::CpuMonitor, gpu::GpuMonitor, memory::MemoryMonitor, process::ProcessMonitor};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::time::{Duration, Instant};
 
 const MAX_CPU_HISTORY: usize = 1200; // 20 minutes at 1 second intervals
@@ -30,6 +30,7 @@ pub struct App {
     pub kill_target_pid: Option<u32>,
     pub kill_target_name: String,
     pub help_mode: bool,
+    pub pinned_pids: HashSet<u32>,
     // Cached CPU average for performance
     cpu_average_history: VecDeque<f32>,
     // Update timers
@@ -75,6 +76,7 @@ impl App {
             kill_target_pid: None,
             kill_target_name: String::new(),
             help_mode: false,
+            pinned_pids: HashSet::new(),
             cpu_average_history: VecDeque::with_capacity(MAX_CPU_HISTORY),
             last_cpu_update: Instant::now(),
             last_process_update: Instant::now(),
@@ -294,6 +296,18 @@ impl App {
             KeyCode::Char('q') | KeyCode::Esc => {
                 self.running = false;
             }
+            KeyCode::Enter => {
+                // Toggle pin state for selected process
+                let processes = self.get_filtered_processes();
+                if !processes.is_empty() && self.selected_process < processes.len() {
+                    let pid = processes[self.selected_process].pid;
+                    if self.pinned_pids.contains(&pid) {
+                        self.pinned_pids.remove(&pid);
+                    } else {
+                        self.pinned_pids.insert(pid);
+                    }
+                }
+            }
             KeyCode::Char('?') => {
                 // Toggle help mode
                 self.help_mode = true;
@@ -472,19 +486,31 @@ impl App {
     }
 
     pub fn get_filtered_processes(&self) -> Vec<&crate::process::ProcessInfo> {
-        if self.filtered_indices.is_empty() && !self.filter_input.is_empty() {
-            // Filter active but no matches
-            Vec::new()
-        } else if self.filtered_indices.is_empty() {
-            // No filter active, return all
-            self.process_monitor.get_processes().iter().collect()
-        } else {
-            // Return filtered processes
-            self.filtered_indices
-                .iter()
-                .filter_map(|&i| self.process_monitor.get_processes().get(i))
-                .collect()
+        let mut processes: Vec<&crate::process::ProcessInfo> =
+            if self.filtered_indices.is_empty() && !self.filter_input.is_empty() {
+                // Filter active but no matches
+                Vec::new()
+            } else if self.filtered_indices.is_empty() {
+                // No filter active, return all
+                self.process_monitor.get_processes().iter().collect()
+            } else {
+                // Return filtered processes
+                self.filtered_indices
+                    .iter()
+                    .filter_map(|&i| self.process_monitor.get_processes().get(i))
+                    .collect()
+            };
+
+        // Sort pinned processes to the top (stable sort preserves order within groups)
+        if !self.pinned_pids.is_empty() {
+            processes.sort_by(|a, b| {
+                let a_pinned = self.pinned_pids.contains(&a.pid);
+                let b_pinned = self.pinned_pids.contains(&b.pid);
+                b_pinned.cmp(&a_pinned) // pinned first (true > false)
+            });
         }
+
+        processes
     }
 }
 

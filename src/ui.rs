@@ -155,9 +155,16 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, proc)| {
-            let style = if i == app.get_selected_process() {
+            let is_pinned = app.pinned_pids.contains(&proc.pid);
+            let is_selected = i == app.get_selected_process();
+
+            let style = if is_selected {
                 Style::default()
                     .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_pinned {
+                Style::default()
+                    .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
@@ -166,14 +173,28 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
             // Convert memory to MB
             let mem_mb = proc.memory as f64 / (1024.0 * 1024.0);
 
+            // Show full command for pinned processes, truncate for others
+            let cmd_display = if is_pinned {
+                proc.cmd.clone()
+            } else {
+                truncate_string(&proc.cmd, 60)
+            };
+
+            // Add pin indicator to PID column for pinned processes
+            let pid_display = if is_pinned {
+                format!("◆ {}", proc.pid)
+            } else {
+                proc.pid.to_string()
+            };
+
             Row::new(vec![
-                proc.pid.to_string(),
+                pid_display,
                 truncate_string(&proc.user, 8), // Truncate username to fit column
                 format!("{:.1}", proc.cpu_usage),
                 format!("{:.1}", proc.gpu_usage),
                 format_ports(&proc.ports),
                 format!("{:.0}", mem_mb),
-                truncate_string(&proc.cmd, 60),
+                cmd_display,
             ])
             .style(style)
         })
@@ -246,9 +267,9 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
     } else if app.filter_mode {
         "Type to filter | Enter: Apply | ESC: Cancel"
     } else if app.is_paused() {
-        "[PAUSED] Space: Resume | q: Quit | ↑↓: Nav | K: Kill | s: Sort | /: Filter | +/-: Time | g/G: Top/Bot | v: GPU"
+        "[PAUSED] Space: Resume | q: Quit | ↑↓: Nav | Enter: Pin | K: Kill | s: Sort | /: Filter | +/-: Time | g/G: Top/Bot"
     } else {
-        "Space: Pause | q: Quit | ↑↓: Nav | K: Kill | s: Sort | /: Filter | +/-: Time | g/G: Top/Bot | v: GPU"
+        "Space: Pause | q: Quit | ↑↓: Nav | Enter: Pin | K: Kill | s: Sort | /: Filter | +/-: Time | g/G: Top/Bot"
     };
 
     // Render help in the bottom chunk (pinned to bottom)
@@ -1215,6 +1236,7 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from("  Space         Pause/Resume monitoring"),
+        Line::from("  Enter         Pin/Unpin process (shows full command)"),
         Line::from("  s             Cycle through sort modes"),
         Line::from("  v             Toggle GPU visibility"),
         Line::from("  K             Kill selected process (with confirmation)"),
