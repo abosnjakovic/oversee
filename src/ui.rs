@@ -173,7 +173,7 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
                 format!("{:.1}", proc.gpu_usage),
                 format_ports(&proc.ports),
                 format!("{:.0}", mem_mb),
-                truncate_string(&proc.name, 40),
+                truncate_string(&proc.cmd, 60),
             ])
             .style(style)
         })

@@ -33,6 +33,7 @@ pub struct PortInfo {
 pub struct ProcessInfo {
     pub pid: u32,
     pub name: String,
+    pub cmd: String,
     pub user: String,
     pub cpu_usage: f32,
     pub gpu_usage: f32,
@@ -202,7 +203,8 @@ impl ProcessMonitor {
             ProcessRefreshKind::new()
                 .with_cpu()
                 .with_memory()
-                .with_user(UpdateKind::Always),
+                .with_user(UpdateKind::Always)
+                .with_cmd(UpdateKind::OnlyIfNotSet),
         );
 
         // Initialize users list
@@ -224,7 +226,8 @@ impl ProcessMonitor {
             ProcessRefreshKind::new()
                 .with_cpu()
                 .with_memory()
-                .with_user(UpdateKind::Always),
+                .with_user(UpdateKind::Always)
+                .with_cmd(UpdateKind::OnlyIfNotSet),
         );
 
         // Get port information for all processes (expensive operation - only when requested)
@@ -241,6 +244,18 @@ impl ProcessMonitor {
             .iter()
             .map(|(pid, process)| {
                 let name = process.name().to_string_lossy().to_string();
+
+                // Get full command line, fall back to name if empty
+                let cmd_parts: Vec<String> = process
+                    .cmd()
+                    .iter()
+                    .map(|s| s.to_string_lossy().to_string())
+                    .collect();
+                let cmd = if cmd_parts.is_empty() {
+                    name.clone()
+                } else {
+                    cmd_parts.join(" ")
+                };
 
                 // Get username from UID
                 let user = if let Some(uid) = process.user_id() {
@@ -285,6 +300,7 @@ impl ProcessMonitor {
                 ProcessInfo {
                     pid: process_pid,
                     name,
+                    cmd,
                     user,
                     cpu_usage: process.cpu_usage(),
                     gpu_usage,

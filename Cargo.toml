@@ -1,6 +1,6 @@
 [package]
 name = "oversee"
-version = "0.2.3"
+version = "0.2.4"
 edition = "2024"
 description = "A modern system monitor for macOS with Apple Silicon GPU support"
 license = "MIT"
@@ -16,3 +16,8 @@ ratatui = { version = "0.29.0", features = ["all-widgets"] }
 sysinfo = "0.32"
 crossterm = "0.28"
 libc = "0.2"
+
+# TODO: Fork https://github.com/NixOS/nixpkgs
+  # 2. Copy nixpkgs-package.nix to pkgs/by-name/ov/oversee/package.nix
+  # 3. Get hashes and fill them in
+  # 4. Submit PR titled oversee: init at 0.2.3
