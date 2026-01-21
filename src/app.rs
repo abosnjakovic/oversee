@@ -1,22 +1,30 @@
-use crate::{cpu::CpuMonitor, gpu::GpuMonitor, memory::MemoryMonitor, process::ProcessMonitor};
+use crate::gpu::GpuMonitor;
+use crate::{DataCommand, DataUpdate};
+use crate::memory::MemoryMonitor;
+use crate::process::{ProcessInfo, SortMode};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
 use std::collections::{HashSet, VecDeque};
-use std::time::{Duration, Instant};
+use std::sync::mpsc::{Receiver, Sender};
+use std::time::Duration;
 
-const MAX_CPU_HISTORY: usize = 1200; // 20 minutes at 1 second intervals
 const MAX_TIMELINE_OFFSET: usize = 900; // Allow scrolling back 15 minutes
 
 #[derive(Debug)]
 pub struct App {
-    pub cpu_monitor: CpuMonitor,
-    pub process_monitor: ProcessMonitor,
+    // Data from background thread
     pub cpu_core_histories: Vec<VecDeque<f32>>,
-    pub gpu_monitor: GpuMonitor,
     pub gpu_core_histories: Vec<VecDeque<f32>>,
     pub gpu_overall_history: VecDeque<f32>,
-    pub memory_monitor: MemoryMonitor,
     pub memory_usage_history: VecDeque<f32>,
+    cpu_average_history: VecDeque<f32>,
+    processes: Vec<ProcessInfo>,
+
+    // Static info (doesn't change)
+    pub gpu_monitor: GpuMonitor,       // For GPU availability check
+    pub memory_monitor: MemoryMonitor, // For static memory info
+
+    // UI state
     pub gpu_visible: bool,
     pub selected_process: usize,
     pub table_state: TableState,
@@ -31,39 +39,35 @@ pub struct App {
     pub kill_target_name: String,
     pub help_mode: bool,
     pub pinned_pids: HashSet<u32>,
-    // Cached CPU average for performance
-    cpu_average_history: VecDeque<f32>,
-    // Update timers
-    last_cpu_update: Instant,
-    last_process_update: Instant,
-    last_memory_update: Instant,
-    last_port_update: Instant,
+    sort_mode: SortMode,
+
+    // Channel to send commands to background thread
+    command_tx: Sender<DataCommand>,
 }
 
 impl App {
-    pub fn new() -> Self {
-        let cpu_monitor = CpuMonitor::new();
-        let cpu_count = cpu_monitor.cpu_count();
+    pub fn new(command_tx: Sender<DataCommand>) -> Self {
         let gpu_monitor = GpuMonitor::new();
         let gpu_core_count = gpu_monitor.get_core_count();
 
         let mut table_state = TableState::default();
         table_state.select(Some(0));
 
-        let mut app = App {
-            cpu_monitor,
-            process_monitor: ProcessMonitor::new(),
-            cpu_core_histories: (0..cpu_count)
-                .map(|_| VecDeque::with_capacity(MAX_CPU_HISTORY))
-                .collect(),
-            gpu_monitor,
+        App {
+            // Data will be populated from background thread
+            cpu_core_histories: Vec::new(),
             gpu_core_histories: (0..gpu_core_count)
-                .map(|_| VecDeque::with_capacity(MAX_CPU_HISTORY))
+                .map(|_| VecDeque::new())
                 .collect(),
-            gpu_overall_history: VecDeque::with_capacity(MAX_CPU_HISTORY),
+            gpu_overall_history: VecDeque::new(),
+            memory_usage_history: VecDeque::new(),
+            cpu_average_history: VecDeque::new(),
+            processes: Vec::new(),
+
+            gpu_monitor,
             memory_monitor: MemoryMonitor::new(),
-            memory_usage_history: VecDeque::with_capacity(MAX_CPU_HISTORY),
-            gpu_visible: true, // Show GPU by default if available
+
+            gpu_visible: true,
             selected_process: 0,
             table_state,
             running: true,
@@ -77,151 +81,64 @@ impl App {
             kill_target_name: String::new(),
             help_mode: false,
             pinned_pids: HashSet::new(),
-            cpu_average_history: VecDeque::with_capacity(MAX_CPU_HISTORY),
-            last_cpu_update: Instant::now(),
-            last_process_update: Instant::now(),
-            last_memory_update: Instant::now(),
-            last_port_update: Instant::now(),
-        };
+            sort_mode: SortMode::Cpu,
 
-        // Initialize with some data
-        app.update_cpu_data();
-        app.update_gpu_data();
-        app.update_memory_data();
-        app.update_process_data(true); // Include ports on initial load
-
-        app
+            command_tx,
+        }
     }
 
-    pub fn tick(&mut self) -> bool {
-        let now = Instant::now();
-        let mut needs_render = false;
+    /// Process any pending data updates from the background thread.
+    /// Returns true if any data was updated.
+    pub fn process_updates(&mut self, rx: &Receiver<DataUpdate>) -> bool {
+        let mut updated = false;
 
-        // Update CPU data every 1 second for timeline
-        if now.duration_since(self.last_cpu_update) >= Duration::from_secs(1) {
-            self.update_cpu_data();
-            self.update_gpu_data();
-            self.last_cpu_update = now;
-            needs_render = true;
-        }
+        // Drain all available updates (non-blocking)
+        while let Ok(update) = rx.try_recv() {
+            match update {
+                DataUpdate::Cpu {
+                    core_histories,
+                    average_history,
+                } => {
+                    self.cpu_core_histories = core_histories;
+                    self.cpu_average_history = average_history;
+                    updated = true;
+                }
+                DataUpdate::Gpu {
+                    core_histories,
+                    overall_history,
+                } => {
+                    self.gpu_core_histories = core_histories;
+                    self.gpu_overall_history = overall_history;
+                    updated = true;
+                }
+                DataUpdate::Memory { usage_history } => {
+                    self.memory_usage_history = usage_history;
+                    updated = true;
+                }
+                DataUpdate::Processes { processes } => {
+                    self.processes = processes;
+                    self.update_filtered_indices();
 
-        // Update memory data every 1 second
-        if now.duration_since(self.last_memory_update) >= Duration::from_secs(1) {
-            self.update_memory_data();
-            self.last_memory_update = now;
-            needs_render = true;
-        }
-
-        // Update process data every 1 second (without expensive port collection)
-        if now.duration_since(self.last_process_update) >= Duration::from_secs(1) {
-            self.update_process_data(false);
-            self.last_process_update = now;
-            needs_render = true;
-        }
-
-        // Update port data every 5 seconds (expensive lsof operation)
-        if now.duration_since(self.last_port_update) >= Duration::from_secs(5) {
-            self.update_process_data(true);
-            self.last_port_update = now;
-            self.last_process_update = now; // Reset to avoid immediate duplicate refresh
-            needs_render = true;
-        }
-
-        needs_render
-    }
-
-    fn update_cpu_data(&mut self) {
-        if !self.paused {
-            self.cpu_monitor.refresh();
-            let cpu_usages = self.cpu_monitor.cpu_usages();
-
-            // Update each core's history
-            for (i, (_, usage)) in cpu_usages.iter().enumerate() {
-                if i < self.cpu_core_histories.len() {
-                    self.cpu_core_histories[i].push_back(*usage);
-
-                    // Keep only the last MAX_CPU_HISTORY points
-                    if self.cpu_core_histories[i].len() > MAX_CPU_HISTORY {
-                        self.cpu_core_histories[i].pop_front();
+                    // Reset selection if out of bounds
+                    let process_count = self.processes.len();
+                    if self.selected_process >= process_count && process_count > 0 {
+                        self.selected_process = process_count - 1;
                     }
-                }
-            }
-
-            // Calculate and store CPU average
-            let cpu_count = cpu_usages.len();
-            if cpu_count > 0 {
-                let total: f32 = cpu_usages.iter().map(|(_, usage)| usage).sum();
-                let average = total / cpu_count as f32;
-                self.cpu_average_history.push_back(average);
-
-                // Keep only the last MAX_CPU_HISTORY points
-                if self.cpu_average_history.len() > MAX_CPU_HISTORY {
-                    self.cpu_average_history.pop_front();
+                    updated = true;
                 }
             }
         }
-    }
 
-    fn update_gpu_data(&mut self) {
-        if !self.paused {
-            self.gpu_monitor.refresh();
-            let gpu_info = self.gpu_monitor.get_info();
-
-            // Update overall GPU utilization history
-            self.gpu_overall_history
-                .push_back(gpu_info.overall_utilization);
-            if self.gpu_overall_history.len() > MAX_CPU_HISTORY {
-                self.gpu_overall_history.pop_front();
-            }
-
-            // Update individual GPU core histories
-            for (i, core) in gpu_info.cores.iter().enumerate() {
-                if i < self.gpu_core_histories.len() {
-                    self.gpu_core_histories[i].push_back(core.utilization);
-                    if self.gpu_core_histories[i].len() > MAX_CPU_HISTORY {
-                        self.gpu_core_histories[i].pop_front();
-                    }
-                }
-            }
-        }
-    }
-
-    fn update_memory_data(&mut self) {
-        if !self.paused {
-            self.memory_monitor.refresh();
-
-            // Track memory usage percentage history
-            let memory_info = self.memory_monitor.get_memory_info();
-            self.memory_usage_history
-                .push_back(memory_info.memory_usage_percentage() as f32);
-            if self.memory_usage_history.len() > MAX_CPU_HISTORY {
-                self.memory_usage_history.pop_front();
-            }
-        }
-    }
-
-    fn update_process_data(&mut self, include_ports: bool) {
-        if !self.paused {
-            self.process_monitor.refresh(include_ports);
-
-            // Re-apply filter after refreshing processes
-            self.update_filtered_indices();
-
-            // Reset selection if out of bounds
-            let process_count = self.process_monitor.get_processes().len();
-            if self.selected_process >= process_count && process_count > 0 {
-                self.selected_process = process_count - 1;
-            }
-        }
+        updated
     }
 
     pub fn handle_event(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
-        // Use zero timeout - don't block here since we handle timing in main loop
+        // Poll with a short timeout for responsive UI
         #[allow(clippy::collapsible_if)] // Suggested fix uses unstable let-else syntax
-        if event::poll(Duration::from_millis(0))? {
+        if event::poll(Duration::from_millis(16))? {
             if let Event::Key(key) = event::read()? {
                 self.handle_key_event(key);
-                return Ok(true); // Key events always need render
+                return Ok(true);
             }
         }
         Ok(false)
@@ -243,7 +160,6 @@ impl App {
         if self.kill_confirmation_mode {
             match key.code {
                 KeyCode::Char('y') | KeyCode::Char('Y') => {
-                    // Confirm kill
                     if let Some(pid) = self.kill_target_pid {
                         self.kill_process(pid);
                     }
@@ -252,7 +168,6 @@ impl App {
                     self.kill_target_name.clear();
                 }
                 KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                    // Cancel kill
                     self.kill_confirmation_mode = false;
                     self.kill_target_pid = None;
                     self.kill_target_name.clear();
@@ -262,27 +177,23 @@ impl App {
             return;
         }
 
-        // Handle filter mode input separately
+        // Handle filter mode input
         if self.filter_mode {
             match key.code {
                 KeyCode::Esc => {
-                    // Cancel filter mode and clear filter
                     self.filter_mode = false;
                     self.filter_input.clear();
                     self.update_filtered_indices();
                 }
                 KeyCode::Enter => {
-                    // Apply filter and exit filter mode
                     self.filter_mode = false;
                     self.update_filtered_indices();
                 }
                 KeyCode::Backspace => {
-                    // Remove last character from filter
                     self.filter_input.pop();
                     self.update_filtered_indices();
                 }
                 KeyCode::Char(c) => {
-                    // Add character to filter
                     self.filter_input.push(c);
                     self.update_filtered_indices();
                 }
@@ -297,7 +208,6 @@ impl App {
                 self.running = false;
             }
             KeyCode::Enter => {
-                // Toggle pin state for selected process
                 let processes = self.get_filtered_processes();
                 if !processes.is_empty() && self.selected_process < processes.len() {
                     let pid = processes[self.selected_process].pid;
@@ -309,32 +219,33 @@ impl App {
                 }
             }
             KeyCode::Char('?') => {
-                // Toggle help mode
                 self.help_mode = true;
             }
             KeyCode::Char('/') => {
-                // Enter filter mode
                 self.filter_mode = true;
             }
             KeyCode::Char(' ') => {
                 self.paused = !self.paused;
+                if self.paused {
+                    let _ = self.command_tx.send(DataCommand::Pause);
+                } else {
+                    let _ = self.command_tx.send(DataCommand::Resume);
+                }
             }
             KeyCode::Char('s') => {
-                self.process_monitor.next_sort_mode();
+                self.sort_mode = self.sort_mode.next();
+                let _ = self.command_tx.send(DataCommand::ChangeSortMode);
             }
             KeyCode::Char('+') | KeyCode::Char('=') => {
-                // Move forward in time (decrease offset, min 0)
                 self.timeline_offset = self.timeline_offset.saturating_sub(30);
             }
             KeyCode::Char('-') => {
-                // Move backward in time (increase offset, max MAX_TIMELINE_OFFSET)
                 self.timeline_offset = (self.timeline_offset + 30).min(MAX_TIMELINE_OFFSET);
             }
             KeyCode::Char('v') => {
                 self.gpu_visible = !self.gpu_visible;
             }
             KeyCode::Char('K') => {
-                // Enter kill confirmation mode for selected process
                 let processes = self.get_filtered_processes();
                 if !processes.is_empty() && self.selected_process < processes.len() {
                     let pid = processes[self.selected_process].pid;
@@ -369,7 +280,6 @@ impl App {
                     self.table_state.select(Some(self.selected_process));
                 }
             }
-            // Vim-style page navigation
             KeyCode::PageUp => {
                 self.selected_process = self.selected_process.saturating_sub(10);
                 self.table_state.select(Some(self.selected_process));
@@ -397,7 +307,23 @@ impl App {
     }
 
     pub fn get_cpu_count(&self) -> usize {
-        self.cpu_monitor.cpu_count()
+        self.cpu_core_histories.len()
+    }
+
+    /// Returns current CPU usage for each core (last recorded value)
+    pub fn get_cpu_usages(&self) -> Vec<(String, f32)> {
+        self.cpu_core_histories
+            .iter()
+            .enumerate()
+            .map(|(i, history)| {
+                let usage = history.back().copied().unwrap_or(0.0);
+                (format!("CPU {}", i), usage)
+            })
+            .collect()
+    }
+
+    pub fn get_all_processes(&self) -> &[ProcessInfo] {
+        &self.processes
     }
 
     pub fn get_selected_process(&self) -> usize {
@@ -442,42 +368,38 @@ impl App {
         &self.cpu_average_history
     }
 
+    pub fn get_sort_mode(&self) -> SortMode {
+        self.sort_mode
+    }
+
     fn kill_process(&self, pid: u32) {
         unsafe {
-            // Use SIGTERM (15) first for graceful shutdown
             libc::kill(pid as i32, libc::SIGTERM);
         }
     }
 
     pub fn update_filtered_indices(&mut self) {
         if self.filter_input.is_empty() {
-            // No filter, show all processes
             self.filtered_indices.clear();
         } else {
-            // Filter processes by name, user, PID, or port (case-insensitive)
             let filter_lower = self.filter_input.to_lowercase();
             self.filtered_indices = self
-                .process_monitor
-                .get_processes()
+                .processes
                 .iter()
                 .enumerate()
                 .filter(|(_, proc)| {
-                    // Search by process name
-                    proc.name.to_lowercase().contains(&filter_lower) ||
-                    // Search by username
-                    proc.user.to_lowercase().contains(&filter_lower) ||
-                    // Search by PID (convert to string)
-                    proc.pid.to_string().contains(&filter_lower) ||
-                    // Search by any port
-                    proc.ports.iter().any(|port| {
-                        port.port.to_string().contains(&filter_lower)
-                    })
+                    proc.name.to_lowercase().contains(&filter_lower)
+                        || proc.user.to_lowercase().contains(&filter_lower)
+                        || proc.pid.to_string().contains(&filter_lower)
+                        || proc
+                            .ports
+                            .iter()
+                            .any(|port| port.port.to_string().contains(&filter_lower))
                 })
                 .map(|(i, _)| i)
                 .collect();
         }
 
-        // Reset selection if it's out of bounds
         if !self.filtered_indices.is_empty() && self.selected_process >= self.filtered_indices.len()
         {
             self.selected_process = 0;
@@ -485,37 +407,27 @@ impl App {
         }
     }
 
-    pub fn get_filtered_processes(&self) -> Vec<&crate::process::ProcessInfo> {
-        let mut processes: Vec<&crate::process::ProcessInfo> =
+    pub fn get_filtered_processes(&self) -> Vec<&ProcessInfo> {
+        let mut processes: Vec<&ProcessInfo> =
             if self.filtered_indices.is_empty() && !self.filter_input.is_empty() {
-                // Filter active but no matches
                 Vec::new()
             } else if self.filtered_indices.is_empty() {
-                // No filter active, return all
-                self.process_monitor.get_processes().iter().collect()
+                self.processes.iter().collect()
             } else {
-                // Return filtered processes
                 self.filtered_indices
                     .iter()
-                    .filter_map(|&i| self.process_monitor.get_processes().get(i))
+                    .filter_map(|&i| self.processes.get(i))
                     .collect()
             };
 
-        // Sort pinned processes to the top (stable sort preserves order within groups)
         if !self.pinned_pids.is_empty() {
             processes.sort_by(|a, b| {
                 let a_pinned = self.pinned_pids.contains(&a.pid);
                 let b_pinned = self.pinned_pids.contains(&b.pid);
-                b_pinned.cmp(&a_pinned) // pinned first (true > false)
+                b_pinned.cmp(&a_pinned)
             });
         }
 
         processes
-    }
-}
-
-impl Default for App {
-    fn default() -> Self {
-        Self::new()
     }
 }

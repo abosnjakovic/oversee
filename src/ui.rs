@@ -103,7 +103,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
 }
 
 fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
-    let all_processes = app.process_monitor.get_processes();
+    let all_processes = app.get_all_processes();
     let processes = app.get_filtered_processes();
 
     // Split for table and help - ensure help gets exactly 1 line at bottom
@@ -116,7 +116,7 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
         .split(area);
 
     // Header with sort indicators
-    let sort_mode = app.process_monitor.get_sort_mode();
+    let sort_mode = app.get_sort_mode();
     let header_cells = vec![
         if matches!(sort_mode, SortMode::Pid) {
             "PID ↓"
@@ -388,7 +388,7 @@ fn render_cpu_cores_panel(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // Render CPU cores with dot visualization
-    let cpu_usages = app.cpu_monitor.cpu_usages();
+    let cpu_usages = app.get_cpu_usages();
     for (i, (_cpu_name, usage)) in cpu_usages.iter().enumerate() {
         if i >= core_chunks.len() {
             break;
