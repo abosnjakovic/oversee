@@ -34,9 +34,32 @@ pub enum DataCommand {
     ChangeSortMode,
 }
 use std::error::Error;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+/// Log timing data to /tmp/oversee-profile.log for performance analysis
+fn log_timing(label: &str, duration_ms: u128) {
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/oversee-profile.log")
+    {
+        let _ = writeln!(file, "{}: {}ms", label, duration_ms);
+    }
+}
+
+/// Macro to time an expression and log the result
+macro_rules! profile {
+    ($label:expr, $expr:expr) => {{
+        let start = Instant::now();
+        let result = $expr;
+        log_timing($label, start.elapsed().as_millis());
+        result
+    }};
+}
 
 fn main() -> Result<(), Box<dyn Error>> {
     // Create channels for communication with background thread
@@ -64,14 +87,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Main event loop
     while app.is_running() {
         // Handle keyboard events (blocks for up to 16ms)
-        let event_occurred = app.handle_event()?;
+        let event_occurred = profile!("event_poll", app.handle_event()?);
 
         // Process any data updates from background thread
-        let data_updated = app.process_updates(&update_rx);
+        let data_updated = profile!("process_updates", app.process_updates(&update_rx));
 
         // Only render if something changed
         if data_updated || event_occurred {
-            terminal.draw(|f| ui::render(f, &mut app))?;
+            profile!("render", terminal.draw(|f| ui::render(f, &mut app))?);
         }
     }
 
@@ -88,7 +111,6 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
     use crate::memory::MemoryMonitor;
     use crate::process::ProcessMonitor;
     use std::collections::VecDeque;
-    use std::time::Instant;
 
     const MAX_HISTORY: usize = 1200;
 
@@ -137,7 +159,7 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
             // Update everything every 1 second
             if now.duration_since(last_update) >= Duration::from_secs(1) {
                 // CPU
-                cpu_monitor.refresh();
+                profile!("cpu_refresh", cpu_monitor.refresh());
                 let usages = cpu_monitor.cpu_usages();
                 for (i, (_, usage)) in usages.iter().enumerate() {
                     if i < cpu_core_histories.len() {
@@ -157,7 +179,7 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                 }
 
                 // GPU
-                gpu_monitor.refresh();
+                profile!("gpu_refresh", gpu_monitor.refresh());
                 let gpu_info = gpu_monitor.get_info();
                 gpu_overall_history.push_back(gpu_info.overall_utilization);
                 if gpu_overall_history.len() > MAX_HISTORY {
@@ -173,7 +195,7 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                 }
 
                 // Memory
-                memory_monitor.refresh();
+                profile!("memory_refresh", memory_monitor.refresh());
                 let mem_info = memory_monitor.get_memory_info();
                 memory_usage_history.push_back(mem_info.memory_usage_percentage() as f32);
                 if memory_usage_history.len() > MAX_HISTORY {
@@ -182,12 +204,15 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
 
                 // Processes (ports every 5 seconds)
                 let include_ports = now.duration_since(last_port_update) >= Duration::from_secs(5);
-                process_monitor.refresh(include_ports);
                 if include_ports {
+                    profile!("process_refresh_with_ports", process_monitor.refresh(true));
                     last_port_update = now;
+                } else {
+                    profile!("process_refresh", process_monitor.refresh(false));
                 }
 
-                // Send updates
+                // Send updates (measure total channel send time)
+                let send_start = Instant::now();
                 let _ = tx.send(DataUpdate::Cpu {
                     core_histories: cpu_core_histories.clone(),
                     average_history: cpu_average_history.clone(),
@@ -202,6 +227,7 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                 let _ = tx.send(DataUpdate::Processes {
                     processes: process_monitor.get_processes().to_vec(),
                 });
+                log_timing("channel_send_all", send_start.elapsed().as_millis());
 
                 last_update = now;
             }

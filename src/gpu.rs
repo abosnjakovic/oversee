@@ -1,4 +1,17 @@
 use std::collections::VecDeque;
+use std::fs::OpenOptions;
+use std::io::Write;
+
+/// Log timing data to /tmp/oversee-profile.log for performance analysis
+fn log_timing(label: &str, duration_ms: u128) {
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/oversee-profile.log")
+    {
+        let _ = writeln!(file, "{}: {}ms", label, duration_ms);
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct GpuCoreInfo {
@@ -233,10 +246,12 @@ impl GpuMonitor {
         // Run powermetrics to get GPU stats
         // -i 500 = 500ms sample, -n 1 = one sample only
         // Needs longer sample time to get accurate readings
+        let start = Instant::now();
         let output = Command::new("powermetrics")
             .args(["--sampler", "gpu_power", "-i", "500", "-n", "1"])
             .output()
             .ok()?;
+        log_timing("powermetrics_command", start.elapsed().as_millis());
 
         if !output.status.success() {
             return None; // Probably not running as root

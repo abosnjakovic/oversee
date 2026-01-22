@@ -1,8 +1,22 @@
 use std::collections::HashMap;
 use std::ffi::CStr;
+use std::fs::OpenOptions;
+use std::io::Write as IoWrite;
 use std::mem;
 use std::process::Command;
+use std::time::Instant;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
+
+/// Log timing data to /tmp/oversee-profile.log for performance analysis
+fn log_timing(label: &str, duration_ms: u128) {
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open("/tmp/oversee-profile.log")
+    {
+        let _ = writeln!(file, "{}: {}ms", label, duration_ms);
+    }
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum Protocol {
@@ -84,15 +98,18 @@ fn get_process_ports() -> HashMap<u32, Vec<PortInfo>> {
     let mut port_map = HashMap::new();
 
     // Run lsof command to get network connections
+    let lsof_start = Instant::now();
     let output = match Command::new("lsof").args(["-i", "-P", "-n"]).output() {
         Ok(output) => output,
         Err(_) => return port_map, // lsof not available or failed
     };
+    log_timing("lsof_command", lsof_start.elapsed().as_millis());
 
     if !output.status.success() {
         return port_map;
     }
 
+    let parse_start = Instant::now();
     let output_str = String::from_utf8_lossy(&output.stdout);
 
     for line in output_str.lines() {
@@ -109,6 +126,7 @@ fn get_process_ports() -> HashMap<u32, Vec<PortInfo>> {
                 .push(port_info.1);
         }
     }
+    log_timing("lsof_parse", parse_start.elapsed().as_millis());
 
     port_map
 }
@@ -220,6 +238,7 @@ impl ProcessMonitor {
 
     pub fn refresh(&mut self, include_ports: bool) {
         // Refresh process information
+        let sysinfo_start = Instant::now();
         self.system.refresh_processes_specifics(
             ProcessesToUpdate::All,
             true,
@@ -229,6 +248,7 @@ impl ProcessMonitor {
                 .with_user(UpdateKind::Always)
                 .with_cmd(UpdateKind::OnlyIfNotSet),
         );
+        log_timing("sysinfo_refresh", sysinfo_start.elapsed().as_millis());
 
         // Get port information for all processes (expensive operation - only when requested)
         let port_map = if include_ports {
