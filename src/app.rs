@@ -1,7 +1,7 @@
 use crate::gpu::GpuMonitor;
-use crate::{DataCommand, DataUpdate};
 use crate::memory::MemoryMonitor;
 use crate::process::{ProcessInfo, SortMode};
+use crate::{DataCommand, DataUpdate};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
 use std::collections::{HashSet, VecDeque};
@@ -56,9 +56,7 @@ impl App {
         App {
             // Data will be populated from background thread
             cpu_core_histories: Vec::new(),
-            gpu_core_histories: (0..gpu_core_count)
-                .map(|_| VecDeque::new())
-                .collect(),
+            gpu_core_histories: (0..gpu_core_count).map(|_| VecDeque::new()).collect(),
             gpu_overall_history: VecDeque::new(),
             memory_usage_history: VecDeque::new(),
             cpu_average_history: VecDeque::new(),

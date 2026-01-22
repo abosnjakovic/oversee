@@ -1,8 +1,8 @@
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io::Write as IoWrite;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
@@ -70,7 +70,8 @@ impl PowermetricsState {
     }
 
     fn set_utilization(&self, value: f32) {
-        self.utilization_bits.store(value.to_bits(), Ordering::Relaxed);
+        self.utilization_bits
+            .store(value.to_bits(), Ordering::Relaxed);
     }
 }
 
