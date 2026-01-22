@@ -1,6 +1,10 @@
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
-use std::io::Write;
+use std::io::Write as IoWrite;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 
 /// Log timing data to /tmp/oversee-profile.log for performance analysis
 fn log_timing(label: &str, duration_ms: u128) {
@@ -45,18 +49,41 @@ impl Default for GpuInfo {
     }
 }
 
-use std::time::Instant;
+/// Shared state for the background powermetrics thread
+struct PowermetricsState {
+    /// GPU utilization stored as u32 bits (reinterpreted as f32)
+    utilization_bits: AtomicU32,
+    /// Signal to stop the background thread
+    should_stop: AtomicBool,
+}
 
-#[derive(Debug)]
+impl PowermetricsState {
+    fn new() -> Self {
+        Self {
+            utilization_bits: AtomicU32::new(0.0_f32.to_bits()),
+            should_stop: AtomicBool::new(false),
+        }
+    }
+
+    fn get_utilization(&self) -> f32 {
+        f32::from_bits(self.utilization_bits.load(Ordering::Relaxed))
+    }
+
+    fn set_utilization(&self, value: f32) {
+        self.utilization_bits.store(value.to_bits(), Ordering::Relaxed);
+    }
+}
+
 pub struct GpuMonitor {
     current_info: GpuInfo,
     core_histories: Vec<VecDeque<f32>>,
     available: bool,
     core_count: usize,
     chip_name: String,
-    // Cache powermetrics result to avoid calling it too frequently
-    cached_utilization: f32,
-    last_powermetrics_call: Option<Instant>,
+    /// Shared state with background thread
+    state: Arc<PowermetricsState>,
+    /// Handle to the background thread (for cleanup)
+    _background_thread: Option<JoinHandle<()>>,
 }
 
 impl GpuMonitor {
@@ -75,14 +102,26 @@ impl GpuMonitor {
             ..Default::default()
         };
 
+        let state = Arc::new(PowermetricsState::new());
+
+        // Spawn background thread for powermetrics polling if GPU is available
+        let background_thread = if available {
+            let state_clone = Arc::clone(&state);
+            Some(thread::spawn(move || {
+                Self::powermetrics_background_loop(state_clone);
+            }))
+        } else {
+            None
+        };
+
         GpuMonitor {
             current_info,
             core_histories,
             available,
             core_count,
             chip_name,
-            cached_utilization: 0.0,
-            last_powermetrics_call: None,
+            state,
+            _background_thread: background_thread,
         }
     }
 
@@ -95,7 +134,7 @@ impl GpuMonitor {
             return;
         }
 
-        // Generate GPU info with per-core data
+        // Generate GPU info with per-core data (reads from shared state)
         self.current_info = self.get_gpu_info();
 
         // Add each core's data to history
@@ -117,6 +156,26 @@ impl GpuMonitor {
 
     pub fn get_core_count(&self) -> usize {
         self.core_count
+    }
+
+    /// Background loop that polls powermetrics every 5 seconds
+    fn powermetrics_background_loop(state: Arc<PowermetricsState>) {
+        // Initial delay to let the app start up
+        thread::sleep(Duration::from_millis(500));
+
+        while !state.should_stop.load(Ordering::Relaxed) {
+            if let Some(util) = Self::get_gpu_utilization_from_powermetrics() {
+                state.set_utilization(util);
+            }
+
+            // Poll every 5 seconds (increased from 2s for lower overhead)
+            for _ in 0..50 {
+                if state.should_stop.load(Ordering::Relaxed) {
+                    return;
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
     }
 
     // Check if running on Apple Silicon
@@ -195,22 +254,10 @@ impl GpuMonitor {
         ("Unknown".to_string(), 8)
     }
 
-    // Get real GPU info from powermetrics (requires sudo)
-    fn get_gpu_info(&mut self) -> GpuInfo {
-        // Only call powermetrics every 2 seconds to avoid UI lag
-        let should_refresh = match self.last_powermetrics_call {
-            None => true,
-            Some(last) => last.elapsed().as_secs() >= 2,
-        };
-
-        if should_refresh {
-            if let Some(util) = Self::get_gpu_utilization_from_powermetrics() {
-                self.cached_utilization = util;
-            }
-            self.last_powermetrics_call = Some(Instant::now());
-        }
-
-        let overall_utilization = self.cached_utilization;
+    // Get real GPU info from shared state (updated by background thread)
+    fn get_gpu_info(&self) -> GpuInfo {
+        // Read utilization from shared state (lock-free)
+        let overall_utilization = self.state.get_utilization();
 
         // Generate per-core utilization based on overall
         // Apple Silicon doesn't expose per-core GPU stats, so we estimate
@@ -244,11 +291,11 @@ impl GpuMonitor {
         use std::process::Command;
 
         // Run powermetrics to get GPU stats
-        // -i 500 = 500ms sample, -n 1 = one sample only
-        // Needs longer sample time to get accurate readings
+        // -i 200 = 200ms sample (reduced from 500ms for faster response)
+        // -n 1 = one sample only
         let start = Instant::now();
         let output = Command::new("powermetrics")
-            .args(["--sampler", "gpu_power", "-i", "500", "-n", "1"])
+            .args(["--sampler", "gpu_power", "-i", "200", "-n", "1"])
             .output()
             .ok()?;
         log_timing("powermetrics_command", start.elapsed().as_millis());
@@ -321,5 +368,22 @@ impl GpuMonitor {
 impl Default for GpuMonitor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::fmt::Debug for GpuMonitor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GpuMonitor")
+            .field("available", &self.available)
+            .field("core_count", &self.core_count)
+            .field("chip_name", &self.chip_name)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for GpuMonitor {
+    fn drop(&mut self) {
+        // Signal the background thread to stop
+        self.state.should_stop.store(true, Ordering::Relaxed);
     }
 }
