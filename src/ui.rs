@@ -405,8 +405,8 @@ fn render_cpu_cores_panel(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_gpu_cores_panel(f: &mut Frame, app: &App, area: Rect) {
-    let gpu_info = app.get_gpu_monitor().get_info();
-    let gpu_count = gpu_info.cores.len();
+    let gpu_usages = app.get_gpu_usages();
+    let gpu_count = gpu_usages.len();
     let available_height = area.height as usize;
 
     if gpu_count == 0 || available_height == 0 {
@@ -426,7 +426,7 @@ fn render_gpu_cores_panel(f: &mut Frame, app: &App, area: Rect) {
         .split(area);
 
     // Render GPU cores with dot visualization
-    for (i, core) in gpu_info.cores.iter().enumerate() {
+    for (i, (_gpu_name, usage)) in gpu_usages.iter().enumerate() {
         if i >= core_chunks.len() {
             break;
         }
@@ -435,7 +435,7 @@ fn render_gpu_cores_panel(f: &mut Frame, app: &App, area: Rect) {
             f,
             core_chunks[i],
             &format!("GPU {}", i),
-            core.utilization,
+            *usage,
             Color::Magenta,
         );
     }

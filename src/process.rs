@@ -239,19 +239,35 @@ impl ProcessMonitor {
         }
     }
 
-    pub fn refresh(&mut self, include_ports: bool) {
+    /// Refresh process information.
+    /// - `include_ports`: Whether to run lsof to get port information (expensive)
+    /// - `full_refresh`: If true, refresh memory/user/cmd info; if false, only refresh CPU usage
+    pub fn refresh(&mut self, include_ports: bool, full_refresh: bool) {
         // Refresh process information
         let sysinfo_start = Instant::now();
-        self.system.refresh_processes_specifics(
-            ProcessesToUpdate::All,
-            true,
+
+        // CPU-only refresh is faster; full refresh includes memory and user info
+        let refresh_kind = if full_refresh {
             ProcessRefreshKind::new()
                 .with_cpu()
                 .with_memory()
                 .with_user(UpdateKind::Always)
-                .with_cmd(UpdateKind::OnlyIfNotSet),
+                .with_cmd(UpdateKind::OnlyIfNotSet)
+        } else {
+            // CPU-only refresh - much lighter weight
+            ProcessRefreshKind::new().with_cpu()
+        };
+
+        self.system
+            .refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind);
+        log_timing(
+            if full_refresh {
+                "sysinfo_refresh_full"
+            } else {
+                "sysinfo_refresh_cpu"
+            },
+            sysinfo_start.elapsed().as_millis(),
         );
-        log_timing("sysinfo_refresh", sysinfo_start.elapsed().as_millis());
 
         // Get port information for all processes (expensive operation - only when requested)
         let port_map = if include_ports {

@@ -364,6 +364,18 @@ impl App {
             .collect()
     }
 
+    /// Returns current GPU usage for each core (last recorded value)
+    pub fn get_gpu_usages(&self) -> Vec<(String, f32)> {
+        self.gpu_core_histories
+            .iter()
+            .enumerate()
+            .map(|(i, history)| {
+                let usage = history.back().copied().unwrap_or(0.0);
+                (format!("GPU {}", i), usage)
+            })
+            .collect()
+    }
+
     pub fn get_all_processes(&self) -> &[ProcessInfo] {
         &self.processes
     }
@@ -400,10 +412,6 @@ impl App {
 
     pub fn is_gpu_visible(&self) -> bool {
         self.gpu_visible && self.gpu_monitor.is_available()
-    }
-
-    pub fn get_gpu_monitor(&self) -> &GpuMonitor {
-        &self.gpu_monitor
     }
 
     pub fn get_cpu_average_history(&self) -> &VecDeque<f32> {

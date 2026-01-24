@@ -124,6 +124,7 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
     let mut paused = false;
     let mut last_update = Instant::now() - Duration::from_secs(10); // Force immediate update
     let mut last_port_update = Instant::now() - Duration::from_secs(10);
+    let mut last_full_process_refresh = Instant::now() - Duration::from_secs(10); // Force immediate full refresh
 
     loop {
         // Check for commands (non-blocking)
@@ -158,13 +159,27 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                 profile!("memory_refresh", memory_monitor.refresh());
                 let mem_info = memory_monitor.get_memory_info();
 
-                // Processes (ports every 15 seconds - lsof is expensive)
+                // Processes: CPU-only refresh every second, full refresh every 5 seconds
+                // Port refresh every 15 seconds (lsof is expensive)
                 let include_ports = now.duration_since(last_port_update) >= Duration::from_secs(15);
+                let full_refresh =
+                    now.duration_since(last_full_process_refresh) >= Duration::from_secs(5);
+
                 if include_ports {
-                    profile!("process_refresh_with_ports", process_monitor.refresh(true));
+                    profile!(
+                        "process_refresh_with_ports",
+                        process_monitor.refresh(true, true)
+                    );
                     last_port_update = now;
+                    last_full_process_refresh = now;
+                } else if full_refresh {
+                    profile!("process_refresh_full", process_monitor.refresh(false, true));
+                    last_full_process_refresh = now;
                 } else {
-                    profile!("process_refresh", process_monitor.refresh(false));
+                    profile!(
+                        "process_refresh_cpu_only",
+                        process_monitor.refresh(false, false)
+                    );
                 }
 
                 // Send incremental updates (only new values, not full histories)
