@@ -54,7 +54,7 @@ impl MemoryPressure {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct MemoryInfo {
     pub total_memory: u64,
     pub used_memory: u64,

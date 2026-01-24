@@ -1072,7 +1072,12 @@ fn render_core_dot_line(
 fn render_memory_section(f: &mut Frame, app: &App, area: Rect) {
     use crate::memory::MemoryPressure;
 
-    let memory_info = app.memory_monitor.get_memory_info();
+    let Some(memory_info) = app.memory_info else {
+        let stats =
+            Paragraph::new("Memory: Loading...").style(Style::default().fg(Color::DarkGray));
+        f.render_widget(stats, area);
+        return;
+    };
 
     // Simplified single-line memory display with key stats
     let stats_text = if memory_info.total_swap > 0 {

@@ -20,6 +20,7 @@ pub enum DataUpdate {
     },
     Memory {
         usage_history: std::collections::VecDeque<f32>,
+        info: memory::MemoryInfo,
     },
     Processes {
         processes: Vec<process::ProcessInfo>,
@@ -223,6 +224,7 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                 });
                 let _ = tx.send(DataUpdate::Memory {
                     usage_history: memory_usage_history.clone(),
+                    info: mem_info,
                 });
                 let _ = tx.send(DataUpdate::Processes {
                     processes: process_monitor.get_processes().to_vec(),

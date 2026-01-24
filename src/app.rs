@@ -1,5 +1,5 @@
 use crate::gpu::GpuMonitor;
-use crate::memory::MemoryMonitor;
+use crate::memory::MemoryInfo;
 use crate::process::{ProcessInfo, SortMode};
 use crate::{DataCommand, DataUpdate};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
@@ -21,8 +21,8 @@ pub struct App {
     processes: Vec<ProcessInfo>,
 
     // Static info (doesn't change)
-    pub gpu_monitor: GpuMonitor,       // For GPU availability check
-    pub memory_monitor: MemoryMonitor, // For static memory info
+    pub gpu_monitor: GpuMonitor,         // For GPU availability check
+    pub memory_info: Option<MemoryInfo>, // Updated from background thread
 
     // UI state
     pub gpu_visible: bool,
@@ -63,7 +63,7 @@ impl App {
             processes: Vec::new(),
 
             gpu_monitor,
-            memory_monitor: MemoryMonitor::new(),
+            memory_info: None,
 
             gpu_visible: true,
             selected_process: 0,
@@ -109,8 +109,12 @@ impl App {
                     self.gpu_overall_history = overall_history;
                     updated = true;
                 }
-                DataUpdate::Memory { usage_history } => {
+                DataUpdate::Memory {
+                    usage_history,
+                    info,
+                } => {
                     self.memory_usage_history = usage_history;
+                    self.memory_info = Some(info);
                     updated = true;
                 }
                 DataUpdate::Processes { processes } => {
