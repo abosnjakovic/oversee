@@ -203,8 +203,8 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                     memory_usage_history.pop_front();
                 }
 
-                // Processes (ports every 5 seconds)
-                let include_ports = now.duration_since(last_port_update) >= Duration::from_secs(5);
+                // Processes (ports every 15 seconds - lsof is expensive)
+                let include_ports = now.duration_since(last_port_update) >= Duration::from_secs(15);
                 if include_ports {
                     profile!("process_refresh_with_ports", process_monitor.refresh(true));
                     last_port_update = now;
