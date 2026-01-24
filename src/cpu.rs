@@ -27,6 +27,7 @@ impl CpuMonitor {
         self.system.refresh_cpu_usage();
     }
 
+    #[allow(dead_code)]
     pub fn cpu_count(&self) -> usize {
         self.system.cpus().len()
     }

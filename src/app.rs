@@ -87,33 +87,73 @@ impl App {
 
     /// Process any pending data updates from the background thread.
     /// Returns true if any data was updated.
+    /// App maintains its own history buffers and appends incremental values.
     pub fn process_updates(&mut self, rx: &Receiver<DataUpdate>) -> bool {
+        const MAX_HISTORY: usize = 1200;
         let mut updated = false;
 
         // Drain all available updates (non-blocking)
         while let Ok(update) = rx.try_recv() {
             match update {
                 DataUpdate::Cpu {
-                    core_histories,
-                    average_history,
+                    core_values,
+                    average_value,
                 } => {
-                    self.cpu_core_histories = core_histories;
-                    self.cpu_average_history = average_history;
+                    // Initialise history vectors if needed
+                    if self.cpu_core_histories.len() != core_values.len() {
+                        self.cpu_core_histories = (0..core_values.len())
+                            .map(|_| VecDeque::with_capacity(MAX_HISTORY))
+                            .collect();
+                    }
+
+                    // Append new values to histories
+                    for (i, &value) in core_values.iter().enumerate() {
+                        if i < self.cpu_core_histories.len() {
+                            self.cpu_core_histories[i].push_back(value);
+                            if self.cpu_core_histories[i].len() > MAX_HISTORY {
+                                self.cpu_core_histories[i].pop_front();
+                            }
+                        }
+                    }
+
+                    self.cpu_average_history.push_back(average_value);
+                    if self.cpu_average_history.len() > MAX_HISTORY {
+                        self.cpu_average_history.pop_front();
+                    }
                     updated = true;
                 }
                 DataUpdate::Gpu {
-                    core_histories,
-                    overall_history,
+                    core_values,
+                    overall_value,
                 } => {
-                    self.gpu_core_histories = core_histories;
-                    self.gpu_overall_history = overall_history;
+                    // Initialise history vectors if needed
+                    if self.gpu_core_histories.len() != core_values.len() {
+                        self.gpu_core_histories = (0..core_values.len())
+                            .map(|_| VecDeque::with_capacity(MAX_HISTORY))
+                            .collect();
+                    }
+
+                    // Append new values to histories
+                    for (i, &value) in core_values.iter().enumerate() {
+                        if i < self.gpu_core_histories.len() {
+                            self.gpu_core_histories[i].push_back(value);
+                            if self.gpu_core_histories[i].len() > MAX_HISTORY {
+                                self.gpu_core_histories[i].pop_front();
+                            }
+                        }
+                    }
+
+                    self.gpu_overall_history.push_back(overall_value);
+                    if self.gpu_overall_history.len() > MAX_HISTORY {
+                        self.gpu_overall_history.pop_front();
+                    }
                     updated = true;
                 }
-                DataUpdate::Memory {
-                    usage_history,
-                    info,
-                } => {
-                    self.memory_usage_history = usage_history;
+                DataUpdate::Memory { usage_value, info } => {
+                    self.memory_usage_history.push_back(usage_value);
+                    if self.memory_usage_history.len() > MAX_HISTORY {
+                        self.memory_usage_history.pop_front();
+                    }
                     self.memory_info = Some(info);
                     updated = true;
                 }

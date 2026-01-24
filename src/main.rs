@@ -9,17 +9,21 @@ mod ui;
 use app::App;
 
 /// Messages sent from the background data collector to the main thread
+/// Uses incremental updates to avoid cloning large history buffers every second
 pub enum DataUpdate {
+    /// Incremental CPU update - just the new values for this tick
     Cpu {
-        core_histories: Vec<std::collections::VecDeque<f32>>,
-        average_history: std::collections::VecDeque<f32>,
+        core_values: Vec<f32>, // Current value for each core
+        average_value: f32,    // Current average across all cores
     },
+    /// Incremental GPU update - just the new values for this tick
     Gpu {
-        core_histories: Vec<std::collections::VecDeque<f32>>,
-        overall_history: std::collections::VecDeque<f32>,
+        core_values: Vec<f32>, // Current value for each core
+        overall_value: f32,    // Current overall utilisation
     },
+    /// Incremental memory update - just the new value for this tick
     Memory {
-        usage_history: std::collections::VecDeque<f32>,
+        usage_value: f32, // Current memory usage percentage
         info: memory::MemoryInfo,
     },
     Processes {
@@ -111,28 +115,11 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
     use crate::gpu::GpuMonitor;
     use crate::memory::MemoryMonitor;
     use crate::process::ProcessMonitor;
-    use std::collections::VecDeque;
-
-    const MAX_HISTORY: usize = 1200;
 
     let mut cpu_monitor = CpuMonitor::new();
     let mut gpu_monitor = GpuMonitor::new();
     let mut memory_monitor = MemoryMonitor::new();
     let mut process_monitor = ProcessMonitor::new();
-
-    let cpu_count = cpu_monitor.cpu_count();
-    let gpu_core_count = gpu_monitor.get_core_count();
-
-    // History buffers
-    let mut cpu_core_histories: Vec<VecDeque<f32>> = (0..cpu_count)
-        .map(|_| VecDeque::with_capacity(MAX_HISTORY))
-        .collect();
-    let mut cpu_average_history: VecDeque<f32> = VecDeque::with_capacity(MAX_HISTORY);
-    let mut gpu_core_histories: Vec<VecDeque<f32>> = (0..gpu_core_count)
-        .map(|_| VecDeque::with_capacity(MAX_HISTORY))
-        .collect();
-    let mut gpu_overall_history: VecDeque<f32> = VecDeque::with_capacity(MAX_HISTORY);
-    let mut memory_usage_history: VecDeque<f32> = VecDeque::with_capacity(MAX_HISTORY);
 
     let mut paused = false;
     let mut last_update = Instant::now() - Duration::from_secs(10); // Force immediate update
@@ -162,46 +149,14 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                 // CPU
                 profile!("cpu_refresh", cpu_monitor.refresh());
                 let usages = cpu_monitor.cpu_usages();
-                for (i, (_, usage)) in usages.iter().enumerate() {
-                    if i < cpu_core_histories.len() {
-                        cpu_core_histories[i].push_back(*usage);
-                        if cpu_core_histories[i].len() > MAX_HISTORY {
-                            cpu_core_histories[i].pop_front();
-                        }
-                    }
-                }
-                let cpu_count = usages.len();
-                if cpu_count > 0 {
-                    let total: f32 = usages.iter().map(|(_, u)| u).sum();
-                    cpu_average_history.push_back(total / cpu_count as f32);
-                    if cpu_average_history.len() > MAX_HISTORY {
-                        cpu_average_history.pop_front();
-                    }
-                }
 
                 // GPU
                 profile!("gpu_refresh", gpu_monitor.refresh());
                 let gpu_info = gpu_monitor.get_info();
-                gpu_overall_history.push_back(gpu_info.overall_utilization);
-                if gpu_overall_history.len() > MAX_HISTORY {
-                    gpu_overall_history.pop_front();
-                }
-                for (i, core) in gpu_info.cores.iter().enumerate() {
-                    if i < gpu_core_histories.len() {
-                        gpu_core_histories[i].push_back(core.utilization);
-                        if gpu_core_histories[i].len() > MAX_HISTORY {
-                            gpu_core_histories[i].pop_front();
-                        }
-                    }
-                }
 
                 // Memory
                 profile!("memory_refresh", memory_monitor.refresh());
                 let mem_info = memory_monitor.get_memory_info();
-                memory_usage_history.push_back(mem_info.memory_usage_percentage() as f32);
-                if memory_usage_history.len() > MAX_HISTORY {
-                    memory_usage_history.pop_front();
-                }
 
                 // Processes (ports every 15 seconds - lsof is expensive)
                 let include_ports = now.duration_since(last_port_update) >= Duration::from_secs(15);
@@ -212,20 +167,33 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                     profile!("process_refresh", process_monitor.refresh(false));
                 }
 
-                // Send updates (measure total channel send time)
+                // Send incremental updates (only new values, not full histories)
                 let send_start = Instant::now();
+
+                // CPU: send current values for each core
+                let cpu_core_values: Vec<f32> = usages.iter().map(|(_, u)| *u).collect();
+                let cpu_avg = if !cpu_core_values.is_empty() {
+                    cpu_core_values.iter().sum::<f32>() / cpu_core_values.len() as f32
+                } else {
+                    0.0
+                };
                 let _ = tx.send(DataUpdate::Cpu {
-                    core_histories: cpu_core_histories.clone(),
-                    average_history: cpu_average_history.clone(),
+                    core_values: cpu_core_values,
+                    average_value: cpu_avg,
                 });
+
+                // GPU: send current values
                 let _ = tx.send(DataUpdate::Gpu {
-                    core_histories: gpu_core_histories.clone(),
-                    overall_history: gpu_overall_history.clone(),
+                    core_values: gpu_info.cores.iter().map(|c| c.utilization).collect(),
+                    overall_value: gpu_info.overall_utilization,
                 });
+
+                // Memory: send current usage percentage
                 let _ = tx.send(DataUpdate::Memory {
-                    usage_history: memory_usage_history.clone(),
+                    usage_value: mem_info.memory_usage_percentage() as f32,
                     info: mem_info,
                 });
+
                 let _ = tx.send(DataUpdate::Processes {
                     processes: process_monitor.get_processes().to_vec(),
                 });
