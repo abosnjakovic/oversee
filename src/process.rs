@@ -208,6 +208,8 @@ pub struct ProcessMonitor {
     users: Users,
     processes: Vec<ProcessInfo>,
     sort_mode: SortMode,
+    /// Cache UID -> username mappings to avoid repeated FFI calls
+    uid_cache: HashMap<u32, String>,
 }
 
 impl ProcessMonitor {
@@ -233,6 +235,7 @@ impl ProcessMonitor {
             users,
             processes: Vec::new(),
             sort_mode: SortMode::Cpu,
+            uid_cache: HashMap::new(),
         }
     }
 
@@ -277,21 +280,26 @@ impl ProcessMonitor {
                     cmd_parts.join(" ")
                 };
 
-                // Get username from UID
+                // Get username from UID (with caching to avoid repeated FFI calls)
                 let user = if let Some(uid) = process.user_id() {
-                    // First try sysinfo's user database
-                    if let Some(user) = self.users.get_user_by_id(uid) {
-                        user.name().to_string()
+                    let uid_value = **uid;
+                    // Check cache first
+                    if let Some(cached) = self.uid_cache.get(&uid_value) {
+                        cached.clone()
                     } else {
-                        // Try libc fallback for system users
-                        // Convert Uid to u32 - dereference the Uid wrapper
-                        let uid_value = **uid;
-                        if let Some(username) = get_username_from_uid(uid_value) {
+                        // First try sysinfo's user database
+                        let username = if let Some(user) = self.users.get_user_by_id(uid) {
+                            user.name().to_string()
+                        } else if let Some(username) = get_username_from_uid(uid_value) {
+                            // Try libc fallback for system users
                             username
                         } else {
                             // Last resort: show numeric UID
                             uid_value.to_string()
-                        }
+                        };
+                        // Cache the result
+                        self.uid_cache.insert(uid_value, username.clone());
+                        username
                     }
                 } else {
                     // No UID available
