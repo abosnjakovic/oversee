@@ -327,7 +327,7 @@ dependencies = [
 
 [[package]]
 name = "oversee"
-version = "0.2.6"
+version = "0.2.7"
 dependencies = [
  "crossterm",
  "libc",

@@ -423,9 +423,21 @@ impl App {
     }
 
     fn kill_process(&self, pid: u32) {
-        unsafe {
-            libc::kill(pid as i32, libc::SIGTERM);
-        }
+        let pid = pid as i32;
+        std::thread::spawn(move || {
+            unsafe {
+                // Send SIGTERM first to allow graceful shutdown
+                libc::kill(pid, libc::SIGTERM);
+            }
+            // Wait briefly, then escalate to SIGKILL if still alive
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            unsafe {
+                // kill() with signal 0 checks if process exists without sending a signal
+                if libc::kill(pid, 0) == 0 {
+                    libc::kill(pid, libc::SIGKILL);
+                }
+            }
+        });
     }
 
     pub fn update_filtered_indices(&mut self) {
