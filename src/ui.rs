@@ -173,12 +173,7 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
             // Convert memory to MB
             let mem_mb = proc.memory as f64 / (1024.0 * 1024.0);
 
-            // Show full command for pinned processes, truncate for others
-            let cmd_display = if is_pinned {
-                proc.cmd.clone()
-            } else {
-                truncate_string(&proc.cmd, 60)
-            };
+            let cmd_display = proc.cmd.clone();
 
             // Add pin indicator to PID column for pinned processes
             let pid_display = if is_pinned {
