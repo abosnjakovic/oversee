@@ -1,11 +1,186 @@
 use crate::app::App;
-use crate::process::{ConnectionState, PortInfo, SortMode};
+use crate::process::{ConnectionState, PortInfo, ProcessDetails, ProcessInfo, SortMode};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    widgets::{Paragraph, Row, Table, Wrap},
+    text::{Line, Span, Text},
+    widgets::{Cell, Paragraph, Row, Table, Wrap},
 };
+
+const MAX_BREAKOUT_PORTS: usize = 6;
+
+fn wrap_to_width(s: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return vec![s.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut buf = String::new();
+    let mut buf_len = 0;
+    for ch in s.chars() {
+        buf.push(ch);
+        buf_len += 1;
+        if buf_len >= width {
+            lines.push(std::mem::take(&mut buf));
+            buf_len = 0;
+        }
+    }
+    if !buf.is_empty() {
+        lines.push(buf);
+    }
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    lines
+}
+
+fn format_runtime(secs: u64) -> String {
+    let h = secs / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    if h > 0 {
+        format!("{}h{:02}m", h, m)
+    } else if m > 0 {
+        format!("{}m{:02}s", m, s)
+    } else {
+        format!("{}s", s)
+    }
+}
+
+fn format_port_line(port: &PortInfo) -> String {
+    let proto = match port.protocol {
+        crate::process::Protocol::Tcp => "TCP",
+        crate::process::Protocol::Udp => "UDP",
+    };
+    let state = match port.state {
+        ConnectionState::Listen => "LISTEN",
+        ConnectionState::Established => "ESTABLISHED",
+        ConnectionState::Other => "",
+    };
+    let local = port.local_address.as_deref().unwrap_or("-");
+    let remote = port.remote_address.as_deref();
+    match (state, remote) {
+        ("", None) => format!("  {}  {}", proto, local),
+        ("", Some(r)) => format!("  {}  {} -> {}", proto, local, r),
+        (st, None) => format!("  {}  {}  {}", proto, local, st),
+        (st, Some(r)) => format!("  {}  {}  {} -> {}", proto, local, st, r),
+    }
+}
+
+fn build_breakout_lines<'a>(
+    proc: &ProcessInfo,
+    details: Option<&ProcessDetails>,
+    width: usize,
+) -> Vec<Line<'a>> {
+    let mut lines: Vec<Line> = Vec::new();
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let key_style = Style::default().fg(Color::Yellow);
+
+    // Separator
+    let sep_width = width.max(4);
+    lines.push(Line::from(Span::styled("─".repeat(sep_width), dim)));
+
+    // cmd (wrapped)
+    let prefix = "cmd: ";
+    let inner = width.saturating_sub(prefix.len()).max(10);
+    let cmd_lines = wrap_to_width(&proc.cmd, inner);
+    for (i, l) in cmd_lines.iter().enumerate() {
+        if i == 0 {
+            lines.push(Line::from(vec![
+                Span::styled(prefix, key_style),
+                Span::raw(l.clone()),
+            ]));
+        } else {
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(prefix.len())),
+                Span::raw(l.clone()),
+            ]));
+        }
+    }
+
+    // cwd
+    if let Some(cwd) = &proc.cwd {
+        let prefix = "cwd: ";
+        let inner = width.saturating_sub(prefix.len()).max(10);
+        let parts = wrap_to_width(cwd, inner);
+        for (i, l) in parts.iter().enumerate() {
+            if i == 0 {
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, key_style),
+                    Span::raw(l.clone()),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(prefix.len())),
+                    Span::raw(l.clone()),
+                ]));
+            }
+        }
+    }
+
+    // exe
+    if let Some(exe) = &proc.exe {
+        let prefix = "exe: ";
+        let inner = width.saturating_sub(prefix.len()).max(10);
+        let parts = wrap_to_width(exe, inner);
+        for (i, l) in parts.iter().enumerate() {
+            if i == 0 {
+                lines.push(Line::from(vec![
+                    Span::styled(prefix, key_style),
+                    Span::raw(l.clone()),
+                ]));
+            } else {
+                lines.push(Line::from(vec![
+                    Span::raw(" ".repeat(prefix.len())),
+                    Span::raw(l.clone()),
+                ]));
+            }
+        }
+    }
+
+    // threads / fds / runtime
+    let threads = if proc.thread_count > 0 {
+        proc.thread_count.to_string()
+    } else if let Some(d) = details {
+        d.thread_count_macos
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "…".to_string())
+    } else {
+        "…".to_string()
+    };
+    let fds = match details.and_then(|d| d.fd_count) {
+        Some(n) => n.to_string(),
+        None => "…".to_string(),
+    };
+    let runtime = format_runtime(proc.run_time);
+    lines.push(Line::from(vec![
+        Span::styled("threads: ", key_style),
+        Span::raw(threads),
+        Span::raw("    "),
+        Span::styled("fds: ", key_style),
+        Span::raw(fds),
+        Span::raw("    "),
+        Span::styled("runtime: ", key_style),
+        Span::raw(runtime),
+    ]));
+
+    // ports
+    if !proc.ports.is_empty() {
+        lines.push(Line::from(Span::styled("ports:", key_style)));
+        let total = proc.ports.len();
+        for port in proc.ports.iter().take(MAX_BREAKOUT_PORTS) {
+            lines.push(Line::from(format_port_line(port)));
+        }
+        if total > MAX_BREAKOUT_PORTS {
+            lines.push(Line::from(Span::styled(
+                format!("  ... (+{} more)", total - MAX_BREAKOUT_PORTS),
+                dim,
+            )));
+        }
+    }
+
+    lines
+}
 
 fn format_ports(ports: &[PortInfo]) -> String {
     if ports.is_empty() {
@@ -150,6 +325,10 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
         )
         .height(1);
 
+    // Width available for the Command column's wrapped breakout content.
+    // Fixed cols total 8+8+6+6+12+7 = 47, plus 6 column spacings, plus 2 for highlight symbol.
+    let cmd_col_width = (chunks[0].width as usize).saturating_sub(47 + 6 + 2);
+
     // Process rows
     let rows: Vec<Row> = processes
         .iter()
@@ -157,6 +336,7 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
         .map(|(i, proc)| {
             let is_pinned = app.pinned_pids.contains(&proc.pid);
             let is_selected = i == app.get_selected_process();
+            let is_expanded = app.expanded_pid == Some(proc.pid);
 
             let style = if is_selected {
                 Style::default()
@@ -182,16 +362,37 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
                 proc.pid.to_string()
             };
 
-            Row::new(vec![
-                pid_display,
-                truncate_string(&proc.user, 8), // Truncate username to fit column
-                format!("{:.1}", proc.cpu_usage),
-                format!("{:.1}", proc.gpu_usage),
-                format_ports(&proc.ports),
-                format!("{:.0}", mem_mb),
-                cmd_display,
-            ])
-            .style(style)
+            if is_expanded {
+                let mut cmd_lines: Vec<Line> = vec![Line::from(cmd_display)];
+                cmd_lines.extend(build_breakout_lines(
+                    proc,
+                    app.selected_details.as_ref(),
+                    cmd_col_width,
+                ));
+                let row_height = cmd_lines.len() as u16;
+                Row::new(vec![
+                    Cell::from(pid_display),
+                    Cell::from(truncate_string(&proc.user, 8)),
+                    Cell::from(format!("{:.1}", proc.cpu_usage)),
+                    Cell::from(format!("{:.1}", proc.gpu_usage)),
+                    Cell::from(format_ports(&proc.ports)),
+                    Cell::from(format!("{:.0}", mem_mb)),
+                    Cell::from(Text::from(cmd_lines)),
+                ])
+                .height(row_height)
+                .style(style)
+            } else {
+                Row::new(vec![
+                    pid_display,
+                    truncate_string(&proc.user, 8),
+                    format!("{:.1}", proc.cpu_usage),
+                    format!("{:.1}", proc.gpu_usage),
+                    format_ports(&proc.ports),
+                    format!("{:.0}", mem_mb),
+                    cmd_display,
+                ])
+                .style(style)
+            }
         })
         .collect();
 
