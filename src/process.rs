@@ -447,13 +447,13 @@ impl ProcessMonitor {
                     .sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap());
             }
             SortMode::Memory => {
-                self.processes.sort_by(|a, b| b.memory.cmp(&a.memory));
+                self.processes.sort_by_key(|p| std::cmp::Reverse(p.memory));
             }
             SortMode::Name => {
                 self.processes.sort_by(|a, b| a.name.cmp(&b.name));
             }
             SortMode::Pid => {
-                self.processes.sort_by(|a, b| a.pid.cmp(&b.pid));
+                self.processes.sort_by_key(|p| p.pid);
             }
         }
     }

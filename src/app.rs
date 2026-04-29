@@ -193,12 +193,12 @@ impl App {
                     }
 
                     // Clear breakout if expanded process exited
-                    if let Some(pid) = self.expanded_pid {
-                        if !self.processes.iter().any(|p| p.pid == pid) {
-                            self.expanded_pid = None;
-                            self.selected_details = None;
-                            self.details_last_fetched = None;
-                        }
+                    if let Some(pid) = self.expanded_pid
+                        && !self.processes.iter().any(|p| p.pid == pid)
+                    {
+                        self.expanded_pid = None;
+                        self.selected_details = None;
+                        self.details_last_fetched = None;
                     }
 
                     updated = true;
@@ -363,11 +363,9 @@ impl App {
                 }
             }
             // Vim-style navigation
-            KeyCode::Char('k') | KeyCode::Up => {
-                if self.selected_process > 0 {
-                    self.selected_process -= 1;
-                    self.table_state.select(Some(self.selected_process));
-                }
+            KeyCode::Char('k') | KeyCode::Up if self.selected_process > 0 => {
+                self.selected_process -= 1;
+                self.table_state.select(Some(self.selected_process));
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 let process_count = self.get_filtered_processes().len();
