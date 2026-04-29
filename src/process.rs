@@ -53,6 +53,76 @@ pub struct ProcessInfo {
     pub gpu_usage: f32,
     pub memory: u64,
     pub ports: Vec<PortInfo>,
+    pub cwd: Option<String>,
+    pub exe: Option<String>,
+    pub run_time: u64,
+    pub thread_count: u32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProcessDetails {
+    pub pid: u32,
+    pub fd_count: Option<u32>,
+    pub thread_count_macos: Option<u32>,
+}
+
+pub fn fetch_process_details(pid: u32) -> ProcessDetails {
+    let fd_count = fetch_fd_count(pid);
+    let thread_count_macos = fetch_thread_count_macos(pid);
+    ProcessDetails {
+        pid,
+        fd_count,
+        thread_count_macos,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn fetch_fd_count(pid: u32) -> Option<u32> {
+    std::fs::read_dir(format!("/proc/{}/fd", pid))
+        .ok()
+        .map(|d| d.count() as u32)
+}
+
+#[cfg(target_os = "macos")]
+fn fetch_fd_count(pid: u32) -> Option<u32> {
+    let output = Command::new("lsof")
+        .args(["-p", &pid.to_string(), "-nP"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let count = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .skip(1)
+        .count();
+    Some(count as u32)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn fetch_fd_count(_pid: u32) -> Option<u32> {
+    None
+}
+
+#[cfg(target_os = "macos")]
+fn fetch_thread_count_macos(pid: u32) -> Option<u32> {
+    let output = Command::new("ps")
+        .args(["-M", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let count = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .skip(1)
+        .count();
+    Some(count as u32)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn fetch_thread_count_macos(_pid: u32) -> Option<u32> {
+    None
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -341,6 +411,11 @@ impl ProcessMonitor {
                 let process_pid = pid.as_u32();
                 let ports = port_map.get(&process_pid).cloned().unwrap_or_default();
 
+                let cwd = process.cwd().map(|p| p.to_string_lossy().into_owned());
+                let exe = process.exe().map(|p| p.to_string_lossy().into_owned());
+                let run_time = process.run_time();
+                let thread_count = process.tasks().map(|t| t.len() as u32).unwrap_or(0);
+
                 ProcessInfo {
                     pid: process_pid,
                     name,
@@ -350,6 +425,10 @@ impl ProcessMonitor {
                     gpu_usage,
                     memory: process.memory(),
                     ports,
+                    cwd,
+                    exe,
+                    run_time,
+                    thread_count,
                 }
             })
             .collect();
@@ -368,13 +447,13 @@ impl ProcessMonitor {
                     .sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap());
             }
             SortMode::Memory => {
-                self.processes.sort_by(|a, b| b.memory.cmp(&a.memory));
+                self.processes.sort_by_key(|p| std::cmp::Reverse(p.memory));
             }
             SortMode::Name => {
                 self.processes.sort_by(|a, b| a.name.cmp(&b.name));
             }
             SortMode::Pid => {
-                self.processes.sort_by(|a, b| a.pid.cmp(&b.pid));
+                self.processes.sort_by_key(|p| p.pid);
             }
         }
     }

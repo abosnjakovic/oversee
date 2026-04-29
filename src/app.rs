@@ -1,12 +1,13 @@
 use crate::gpu::GpuMonitor;
 use crate::memory::MemoryInfo;
-use crate::process::{ProcessInfo, SortMode};
+use crate::process::{ProcessDetails, ProcessInfo, SortMode, fetch_process_details};
 use crate::{DataCommand, DataUpdate};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
 use std::collections::{HashSet, VecDeque};
-use std::sync::mpsc::{Receiver, Sender};
-use std::time::Duration;
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread;
+use std::time::{Duration, Instant};
 
 const MAX_TIMELINE_OFFSET: usize = 900; // Allow scrolling back 15 minutes
 
@@ -41,6 +42,13 @@ pub struct App {
     pub pinned_pids: HashSet<u32>,
     sort_mode: SortMode,
 
+    // Breakout / details panel state
+    pub expanded_pid: Option<u32>,
+    pub selected_details: Option<ProcessDetails>,
+    details_tx: Sender<u32>,
+    details_rx: Receiver<ProcessDetails>,
+    details_last_fetched: Option<Instant>,
+
     // Channel to send commands to background thread
     command_tx: Sender<DataCommand>,
 }
@@ -52,6 +60,17 @@ impl App {
 
         let mut table_state = TableState::default();
         table_state.select(Some(0));
+
+        let (details_req_tx, details_req_rx) = mpsc::channel::<u32>();
+        let (details_res_tx, details_res_rx) = mpsc::channel::<ProcessDetails>();
+        thread::spawn(move || {
+            while let Ok(pid) = details_req_rx.recv() {
+                let details = fetch_process_details(pid);
+                if details_res_tx.send(details).is_err() {
+                    break;
+                }
+            }
+        });
 
         App {
             // Data will be populated from background thread
@@ -80,6 +99,12 @@ impl App {
             help_mode: false,
             pinned_pids: HashSet::new(),
             sort_mode: SortMode::Cpu,
+
+            expanded_pid: None,
+            selected_details: None,
+            details_tx: details_req_tx,
+            details_rx: details_res_rx,
+            details_last_fetched: None,
 
             command_tx,
         }
@@ -166,8 +191,38 @@ impl App {
                     if self.selected_process >= process_count && process_count > 0 {
                         self.selected_process = process_count - 1;
                     }
+
+                    // Clear breakout if expanded process exited
+                    if let Some(pid) = self.expanded_pid
+                        && !self.processes.iter().any(|p| p.pid == pid)
+                    {
+                        self.expanded_pid = None;
+                        self.selected_details = None;
+                        self.details_last_fetched = None;
+                    }
+
                     updated = true;
                 }
+            }
+        }
+
+        // Drain detail responses; keep only if still matches expanded_pid
+        while let Ok(details) = self.details_rx.try_recv() {
+            if self.expanded_pid == Some(details.pid) {
+                self.selected_details = Some(details);
+                updated = true;
+            }
+        }
+
+        // Periodic refresh of detail data while breakout is open
+        if let Some(pid) = self.expanded_pid {
+            let stale = self
+                .details_last_fetched
+                .map(|t| t.elapsed() >= Duration::from_secs(2))
+                .unwrap_or(true);
+            if stale {
+                self.details_last_fetched = Some(Instant::now());
+                let _ = self.details_tx.send(pid);
             }
         }
 
@@ -258,6 +313,16 @@ impl App {
                     } else {
                         self.pinned_pids.insert(pid);
                     }
+                    if self.expanded_pid == Some(pid) {
+                        self.expanded_pid = None;
+                        self.selected_details = None;
+                        self.details_last_fetched = None;
+                    } else {
+                        self.expanded_pid = Some(pid);
+                        self.selected_details = None;
+                        self.details_last_fetched = Some(Instant::now());
+                        let _ = self.details_tx.send(pid);
+                    }
                 }
             }
             KeyCode::Char('?') => {
@@ -298,11 +363,9 @@ impl App {
                 }
             }
             // Vim-style navigation
-            KeyCode::Char('k') | KeyCode::Up => {
-                if self.selected_process > 0 {
-                    self.selected_process -= 1;
-                    self.table_state.select(Some(self.selected_process));
-                }
+            KeyCode::Char('k') | KeyCode::Up if self.selected_process > 0 => {
+                self.selected_process -= 1;
+                self.table_state.select(Some(self.selected_process));
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 let process_count = self.get_filtered_processes().len();
