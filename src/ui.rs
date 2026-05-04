@@ -1,5 +1,6 @@
 use crate::app::App;
 use crate::process::{ConnectionState, PortInfo, ProcessDetails, ProcessInfo, SortMode};
+use crate::theme::{THEME, TRAIL_TIERS, trail_tier};
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -9,6 +10,24 @@ use ratatui::{
 };
 
 const MAX_BREAKOUT_PORTS: usize = 6;
+
+fn format_uptime_short() -> String {
+    let secs = sysinfo::System::uptime();
+    let d = secs / 86_400;
+    let h = (secs % 86_400) / 3_600;
+    let m = (secs % 3_600) / 60;
+    if d > 0 {
+        format!("{}d{:02}h", d, h)
+    } else if h > 0 {
+        format!("{}h{:02}m", h, m)
+    } else {
+        format!("{}m", m.max(1))
+    }
+}
+
+fn current_load_one() -> f64 {
+    sysinfo::System::load_average().one
+}
 
 fn wrap_to_width(s: &str, width: usize) -> Vec<String> {
     if width == 0 {
@@ -73,8 +92,8 @@ fn build_breakout_lines<'a>(
     width: usize,
 ) -> Vec<Line<'a>> {
     let mut lines: Vec<Line> = Vec::new();
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    let key_style = Style::default().fg(Color::Yellow);
+    let dim = Style::default().fg(THEME.fg_faint);
+    let key_style = Style::default().fg(THEME.accent_warn);
 
     // Separator
     let sep_width = width.max(4);
@@ -233,38 +252,38 @@ pub fn render(f: &mut Frame, app: &mut App) {
         height: size.height.saturating_sub(2),
     };
 
-    // Main layout: Timeline, memory section, then process list with spacing
+    // Main layout: KPI header, separator, timeline, spacing, memory, separator, process list
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(24), // Timeline graph
+            Constraint::Length(1),  // KPI header strip
+            Constraint::Length(1),  // Separator under header
+            Constraint::Length(22), // Timeline graph
             Constraint::Length(1),  // Spacing
-            Constraint::Length(1),  // Memory stats (simplified to 1 line)
-            Constraint::Length(1),  // Spacing
+            Constraint::Length(1),  // Memory stats (1 line)
+            Constraint::Length(1),  // Separator above process list
             Constraint::Min(8),     // Process list
         ])
         .split(margin_area);
 
-    // Split timeline area: graph on left, reserved space for floating panel on right
+    // Render the KPI header across the full width
+    render_kpi_header(f, app, main_chunks[0]);
+
+    // Thin separator line under header
+    render_separator(f, main_chunks[1]);
+
+    // Split timeline area: graph on left, cores panel on right
     let timeline_chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(80), // Graph area (left 70%)
-            Constraint::Percentage(20), // Reserved for floating panel (right 30%)
-        ])
-        .split(main_chunks[0]);
+        .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
+        .split(main_chunks[2]);
 
-    // Render timeline in the left area
     render_chart_timeline(f, app, timeline_chunks[0]);
-
-    // Render cores panel in the right area
     render_cores_panel(f, app, timeline_chunks[1]);
 
-    // Render memory stats section (simplified)
-    render_memory_section(f, app, main_chunks[2]);
-
-    // Render process list
-    render_process_list(f, app, main_chunks[4]);
+    render_memory_section(f, app, main_chunks[4]);
+    render_separator(f, main_chunks[5]);
+    render_process_list(f, app, main_chunks[6]);
 
     // Render kill confirmation dialog if active
     if app.kill_confirmation_mode {
@@ -290,40 +309,41 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
         ])
         .split(area);
 
-    // Header with sort indicators
+    // Header with sort indicators (active sort gets underline + brighter fg).
     let sort_mode = app.get_sort_mode();
-    let header_cells = vec![
-        if matches!(sort_mode, SortMode::Pid) {
-            "PID ↓"
+    let header_base = Style::default().fg(THEME.fg_dim);
+    let header_active = Style::default()
+        .fg(THEME.fg)
+        .add_modifier(Modifier::UNDERLINED);
+    let header_style_for = |is_active: bool| {
+        if is_active {
+            header_active
         } else {
-            "PID"
-        },
-        "User",
-        if matches!(sort_mode, SortMode::Cpu) {
-            "CPU% ↓"
-        } else {
-            "CPU%"
-        },
-        "GPU%",
-        "Ports",
-        if matches!(sort_mode, SortMode::Memory) {
-            "MEM ↓"
-        } else {
-            "MEM"
-        },
-        if matches!(sort_mode, SortMode::Name) {
-            "Command ↑"
-        } else {
-            "Command"
-        },
-    ];
-    let header = Row::new(header_cells)
-        .style(
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        )
-        .height(1);
+            header_base
+        }
+    };
+    let header = Row::new(vec![
+        Cell::from(Span::styled(
+            format!("{:>8}", "PID"),
+            header_style_for(matches!(sort_mode, SortMode::Pid)),
+        )),
+        Cell::from(Span::styled("USER", header_base)),
+        Cell::from(Span::styled(
+            format!("{:>6}", "CPU%"),
+            header_style_for(matches!(sort_mode, SortMode::Cpu)),
+        )),
+        Cell::from(Span::styled(format!("{:>6}", "GPU%"), header_base)),
+        Cell::from(Span::styled("PORTS", header_base)),
+        Cell::from(Span::styled(
+            format!("{:>7}", "MEM"),
+            header_style_for(matches!(sort_mode, SortMode::Memory)),
+        )),
+        Cell::from(Span::styled(
+            "COMMAND",
+            header_style_for(matches!(sort_mode, SortMode::Name)),
+        )),
+    ])
+    .height(1);
 
     // Width available for the Command column's wrapped breakout content.
     // Fixed cols total 8+8+6+6+12+7 = 47, plus 6 column spacings, plus 2 for highlight symbol.
@@ -338,29 +358,47 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
             let is_selected = i == app.get_selected_process();
             let is_expanded = app.expanded_pid == Some(proc.pid);
 
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+            let row_style = if is_selected {
+                Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD)
             } else if is_pinned {
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(THEME.accent_warn)
                     .add_modifier(Modifier::BOLD)
             } else {
-                Style::default()
+                Style::default().fg(THEME.fg)
             };
 
-            // Convert memory to MB
             let mem_mb = proc.memory as f64 / (1024.0 * 1024.0);
 
             let cmd_display = proc.cmd.clone();
 
-            // Add pin indicator to PID column for pinned processes
             let pid_display = if is_pinned {
                 format!("◆ {}", proc.pid)
             } else {
                 proc.pid.to_string()
             };
+
+            // Per-metric coloured numeric cells, dimmed when value is negligible.
+            let metric_cell = |value: f32, color: Color, width: usize| -> Cell {
+                let style = if value < 1.0 {
+                    Style::default().fg(THEME.fg_faint)
+                } else {
+                    Style::default().fg(color)
+                };
+                Cell::from(Span::styled(format!("{:>1$.1}", value, width), style))
+            };
+            let mem_cell = {
+                let style = if mem_mb < 1.0 {
+                    Style::default().fg(THEME.fg_faint)
+                } else {
+                    Style::default().fg(THEME.mem)
+                };
+                Cell::from(Span::styled(format!("{:>7.0}", mem_mb), style))
+            };
+            let pid_cell = Cell::from(Span::styled(
+                format!("{:>8}", pid_display),
+                Style::default().fg(THEME.fg_dim),
+            ));
 
             if is_expanded {
                 let mut cmd_lines: Vec<Line> = vec![Line::from(cmd_display)];
@@ -371,27 +409,27 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
                 ));
                 let row_height = cmd_lines.len() as u16;
                 Row::new(vec![
-                    Cell::from(pid_display),
+                    pid_cell,
                     Cell::from(truncate_string(&proc.user, 8)),
-                    Cell::from(format!("{:.1}", proc.cpu_usage)),
-                    Cell::from(format!("{:.1}", proc.gpu_usage)),
+                    metric_cell(proc.cpu_usage, THEME.cpu, 6),
+                    metric_cell(proc.gpu_usage, THEME.gpu, 6),
                     Cell::from(format_ports(&proc.ports)),
-                    Cell::from(format!("{:.0}", mem_mb)),
+                    mem_cell,
                     Cell::from(Text::from(cmd_lines)),
                 ])
                 .height(row_height)
-                .style(style)
+                .style(row_style)
             } else {
                 Row::new(vec![
-                    pid_display,
-                    truncate_string(&proc.user, 8),
-                    format!("{:.1}", proc.cpu_usage),
-                    format!("{:.1}", proc.gpu_usage),
-                    format_ports(&proc.ports),
-                    format!("{:.0}", mem_mb),
-                    cmd_display,
+                    pid_cell,
+                    Cell::from(truncate_string(&proc.user, 8)),
+                    metric_cell(proc.cpu_usage, THEME.cpu, 6),
+                    metric_cell(proc.gpu_usage, THEME.gpu, 6),
+                    Cell::from(format_ports(&proc.ports)),
+                    mem_cell,
+                    Cell::from(cmd_display),
                 ])
-                .style(style)
+                .style(row_style)
             }
         })
         .collect();
@@ -399,25 +437,21 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
     // Render title at top of the allocated chunk
     let title_text = if app.filter_mode {
         format!(
-            "Processes ({} total) | Filter: {} _",
+            "processes ({} total) · filter: {} _",
             all_processes.len(),
             app.filter_input
         )
     } else if !app.filter_input.is_empty() {
         format!(
-            "Processes ({}/{} shown) | Filter: {}",
+            "processes ({}/{} shown) · filter: {}",
             processes.len(),
             all_processes.len(),
             app.filter_input
         )
     } else {
-        format!("Processes ({} total)", all_processes.len())
+        format!("processes ({} total)", all_processes.len())
     };
-    let title = Paragraph::new(title_text).style(
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    );
+    let title = Paragraph::new(title_text).style(Style::default().fg(THEME.fg_dim));
 
     let title_area = Rect {
         x: chunks[0].x,
@@ -448,58 +482,131 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
         ],
     )
     .header(header)
-    .row_highlight_style(
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
-    )
+    .row_highlight_style(Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD))
     .highlight_symbol("► ");
 
     f.render_stateful_widget(table, table_area, &mut app.table_state);
 
     // Help text
     let help_text = if app.kill_confirmation_mode {
-        "⚠️  CONFIRM KILL: [Y] Yes | [N] No | ESC: Cancel"
+        "confirm kill · [Y] yes · [N] no · esc cancel"
     } else if app.filter_mode {
-        "Type to filter | Enter: Apply | ESC: Cancel"
+        "type to filter · enter apply · esc cancel"
     } else if app.is_paused() {
-        "[PAUSED] Space: Resume | q: Quit | ↑↓: Nav | Enter: Pin | K: Kill | s: Sort | /: Filter | +/-: Time | g/G: Top/Bot"
+        "[paused] space resume · q quit · ↑↓ nav · enter pin · K kill · s sort · / filter · +/- time · g/G top/bot · ? help"
     } else {
-        "Space: Pause | q: Quit | ↑↓: Nav | Enter: Pin | K: Kill | s: Sort | /: Filter | +/-: Time | g/G: Top/Bot"
+        "space pause · q quit · ↑↓ nav · enter pin · K kill · s sort · / filter · +/- time · g/G top/bot · ? help"
     };
 
-    // Render help in the bottom chunk (pinned to bottom)
+    let help_style = if app.kill_confirmation_mode {
+        Style::default().fg(THEME.accent_crit)
+    } else {
+        Style::default().fg(THEME.fg_faint)
+    };
+
     let help = Paragraph::new(help_text)
-        .style(Style::default().fg(Color::Gray))
+        .style(help_style)
         .wrap(Wrap { trim: true });
 
     f.render_widget(help, chunks[1]);
 }
 
+fn render_separator(f: &mut Frame, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let line = "─".repeat(area.width as usize);
+    let sep = Paragraph::new(line).style(Style::default().fg(THEME.separator));
+    f.render_widget(sep, area);
+}
+
+fn render_kpi_header(f: &mut Frame, app: &App, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let label = Style::default().fg(THEME.fg_dim);
+    let bullet = Span::styled(" · ", Style::default().fg(THEME.fg_faint));
+
+    let load = current_load_one();
+    let cpu_avg = app
+        .get_cpu_average_history()
+        .iter()
+        .last()
+        .copied()
+        .unwrap_or(0.0);
+    let gpu_avg = app
+        .gpu_overall_history
+        .iter()
+        .last()
+        .copied()
+        .unwrap_or(0.0);
+    let mem_pct = app
+        .memory_usage_history
+        .iter()
+        .last()
+        .copied()
+        .unwrap_or(0.0);
+
+    let mem_color = match app.memory_info.as_ref().map(|m| m.pressure) {
+        Some(crate::memory::MemoryPressure::Yellow) => THEME.accent_warn,
+        Some(crate::memory::MemoryPressure::Red) => THEME.accent_crit,
+        _ => THEME.mem,
+    };
+
+    let proc_count = app.get_all_processes().len();
+    let position = app.get_timeline_position_text();
+
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::styled(
+        "oversee",
+        Style::default().fg(THEME.fg).add_modifier(Modifier::BOLD),
+    ));
+    spans.push(bullet.clone());
+    spans.push(Span::styled("load ", label));
+    spans.push(Span::styled(
+        format!("{:.2}", load),
+        Style::default().fg(THEME.fg),
+    ));
+    spans.push(bullet.clone());
+    spans.push(Span::styled("cpu ", label));
+    spans.push(Span::styled(
+        format!("{:>3.0}%", cpu_avg),
+        Style::default().fg(THEME.cpu),
+    ));
+    spans.push(bullet.clone());
+    spans.push(Span::styled("gpu ", label));
+    spans.push(Span::styled(
+        format!("{:>3.0}%", gpu_avg),
+        Style::default().fg(THEME.gpu),
+    ));
+    spans.push(bullet.clone());
+    spans.push(Span::styled("mem ", label));
+    spans.push(Span::styled(
+        format!("{:>3.0}%", mem_pct),
+        Style::default().fg(mem_color),
+    ));
+    spans.push(bullet.clone());
+    spans.push(Span::styled(
+        format!("{} procs", proc_count),
+        Style::default().fg(THEME.fg_dim),
+    ));
+    spans.push(bullet.clone());
+    spans.push(Span::styled("up ", label));
+    spans.push(Span::styled(
+        format_uptime_short(),
+        Style::default().fg(THEME.fg_dim),
+    ));
+    spans.push(bullet);
+    spans.push(Span::styled(position, Style::default().fg(THEME.fg_faint)));
+
+    let header = Paragraph::new(Line::from(spans));
+    f.render_widget(header, area);
+}
+
 fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
-    // Render title without border
-    let title_text = format!("System Timeline ({})", app.get_timeline_position_text());
-    let title = Paragraph::new(title_text).style(
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    );
-
-    let title_area = Rect {
-        x: area.x,
-        y: area.y,
-        width: area.width,
-        height: 1,
-    };
-    f.render_widget(title, title_area);
-
-    // Use full area minus title for the graph
-    let inner = Rect {
-        x: area.x,
-        y: area.y + 1,
-        width: area.width,
-        height: area.height.saturating_sub(1),
-    };
+    // Use the entire area for the graph; KPI header lives in its own row above.
+    let inner = area;
 
     // Use cached CPU average data (computed in update_cpu_data)
     let cpu_history: Vec<f32> = app.get_cpu_average_history().iter().copied().collect();
@@ -523,27 +630,8 @@ fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_cores_panel(f: &mut Frame, app: &App, area: Rect) {
-    let title = Paragraph::new("").style(
-        Style::default()
-            .fg(Color::White)
-            .add_modifier(Modifier::BOLD),
-    );
-
-    let title_area = Rect {
-        x: area.x,
-        y: area.y,
-        width: area.width,
-        height: 1,
-    };
-    f.render_widget(title, title_area);
-
-    // Use remaining area for cores display
-    let cores_area = Rect {
-        x: area.x,
-        y: area.y + 1,
-        width: area.width,
-        height: area.height.saturating_sub(1),
-    };
+    // No title — caller already provides the KPI header above the timeline.
+    let cores_area = area;
 
     // Split cores area horizontally: CPU cores left, GPU cores right
     let split_chunks = Layout::default()
@@ -590,13 +678,7 @@ fn render_cpu_cores_panel(f: &mut Frame, app: &App, area: Rect) {
             break;
         }
 
-        render_core_dot_line(
-            f,
-            core_chunks[i],
-            &format!("CPU {}", i),
-            *usage,
-            Color::Cyan,
-        );
+        render_core_dot_line(f, core_chunks[i], &format!("CPU {}", i), *usage, THEME.cpu);
     }
 }
 
@@ -627,13 +709,7 @@ fn render_gpu_cores_panel(f: &mut Frame, app: &App, area: Rect) {
             break;
         }
 
-        render_core_dot_line(
-            f,
-            core_chunks[i],
-            &format!("GPU {}", i),
-            *usage,
-            Color::Magenta,
-        );
+        render_core_dot_line(f, core_chunks[i], &format!("GPU {}", i), *usage, THEME.gpu);
     }
 }
 
@@ -870,51 +946,70 @@ fn render_oscilloscope_timeline(
             }
         }
 
-        // Build spans for this row, coalescing adjacent cells with the same colour
+        // Compose this row, coalescing adjacent cells with the same style.
+        // Empty cells fall back to grid/cursor decoration so the chart has
+        // structural reference lines beneath the waveform.
+        let on_grid_row = char_height >= 4
+            && (row_idx == char_height / 4
+                || row_idx == char_height / 2
+                || row_idx == (char_height * 3) / 4);
+        let cursor_col = if timeline_offset == 0 && char_width > 0 {
+            Some(char_width - 1)
+        } else {
+            None
+        };
+
         let mut spans: Vec<Span> = Vec::new();
         let mut current_chars = String::new();
-        let mut current_color = CellColor::None;
+        let mut current_style = Style::default();
+        let mut have_run = false;
 
-        for (bits, color) in row_buffer.iter() {
-            let ch = if *bits == 0 {
-                ' '
+        for (col, (bits, color)) in row_buffer.iter().enumerate() {
+            let (ch, style) = if *bits != 0 {
+                let braille = std::char::from_u32(0x2800 + bits).unwrap_or(' ');
+                let tier = trail_tier(col, char_width);
+                let palette = match color {
+                    CellColor::Cpu => &THEME.cpu_trail,
+                    CellColor::Gpu => &THEME.gpu_trail,
+                    CellColor::Memory => &THEME.mem_trail,
+                    CellColor::None => &THEME.cpu_trail,
+                };
+                let idx = tier.min(TRAIL_TIERS - 1);
+                (braille, Style::default().fg(palette[idx]))
+            } else if cursor_col == Some(col) {
+                ('│', Style::default().fg(THEME.cursor))
             } else {
-                std::char::from_u32(0x2800 + bits).unwrap_or(' ')
+                let on_grid_col = char_width >= 5
+                    && (col == char_width / 5
+                        || col == (char_width * 2) / 5
+                        || col == (char_width * 3) / 5
+                        || col == (char_width * 4) / 5);
+                if on_grid_row || on_grid_col {
+                    ('·', Style::default().fg(THEME.grid))
+                } else {
+                    (' ', Style::default())
+                }
             };
 
-            if *color == current_color || (current_chars.is_empty() && *color == CellColor::None) {
+            if have_run && style == current_style {
                 current_chars.push(ch);
-                if current_color == CellColor::None && *color != CellColor::None {
-                    current_color = *color;
-                }
             } else {
-                // Flush current span
-                if !current_chars.is_empty() {
-                    let style = match current_color {
-                        CellColor::None => Style::default(),
-                        CellColor::Cpu => Style::default().fg(Color::Cyan),
-                        CellColor::Gpu => Style::default().fg(Color::Magenta),
-                        CellColor::Memory => Style::default().fg(Color::Green),
-                    };
-                    spans.push(Span::styled(std::mem::take(&mut current_chars), style));
+                if have_run {
+                    spans.push(Span::styled(
+                        std::mem::take(&mut current_chars),
+                        current_style,
+                    ));
                 }
                 current_chars.push(ch);
-                current_color = *color;
+                current_style = style;
+                have_run = true;
             }
         }
 
-        // Flush remaining characters
-        if !current_chars.is_empty() {
-            let style = match current_color {
-                CellColor::None => Style::default(),
-                CellColor::Cpu => Style::default().fg(Color::Cyan),
-                CellColor::Gpu => Style::default().fg(Color::Magenta),
-                CellColor::Memory => Style::default().fg(Color::Green),
-            };
-            spans.push(Span::styled(current_chars, style));
+        if have_run {
+            spans.push(Span::styled(current_chars, current_style));
         }
 
-        // Render the entire row as a single Line
         let line = Line::from(spans);
         let paragraph = Paragraph::new(line);
         f.render_widget(
@@ -1006,11 +1101,8 @@ fn render_signal_labels(
         let cpu_avg_char_row = char_height.saturating_sub(1 + cpu_avg_dot_row / 4);
         let cpu_label_y = area.y + cpu_avg_char_row as u16;
 
-        let cpu_label = Paragraph::new("C").style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        );
+        let cpu_label =
+            Paragraph::new("C").style(Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD));
         f.render_widget(
             cpu_label,
             Rect {
@@ -1028,11 +1120,8 @@ fn render_signal_labels(
         let gpu_avg_char_row = char_height.saturating_sub(1 + gpu_avg_dot_row / 4);
         let gpu_label_y = area.y + gpu_avg_char_row as u16;
 
-        let gpu_label = Paragraph::new("G").style(
-            Style::default()
-                .fg(Color::Magenta)
-                .add_modifier(Modifier::BOLD),
-        );
+        let gpu_label =
+            Paragraph::new("G").style(Style::default().fg(THEME.gpu).add_modifier(Modifier::BOLD));
         f.render_widget(
             gpu_label,
             Rect {
@@ -1050,11 +1139,8 @@ fn render_signal_labels(
         let memory_avg_char_row = char_height.saturating_sub(1 + memory_avg_dot_row / 4);
         let memory_label_y = area.y + memory_avg_char_row as u16;
 
-        let memory_label = Paragraph::new("M").style(
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        );
+        let memory_label =
+            Paragraph::new("M").style(Style::default().fg(THEME.mem).add_modifier(Modifier::BOLD));
         f.render_widget(
             memory_label,
             Rect {
@@ -1068,18 +1154,17 @@ fn render_signal_labels(
 }
 
 fn get_gradient_color(usage: f32) -> Color {
-    // Smooth gradient from green -> yellow -> orange -> red
-    // Similar to btop++ color gradient
+    // Smooth gradient from cool to warm as load climbs.
     if usage >= 90.0 {
-        Color::Red
+        THEME.accent_crit
     } else if usage >= 75.0 {
-        Color::LightRed // Orange-ish
+        Color::Rgb(255, 140, 80)
     } else if usage >= 50.0 {
-        Color::Yellow
+        THEME.accent_warn
     } else if usage >= 25.0 {
-        Color::LightYellow
+        Color::Rgb(200, 200, 120)
     } else {
-        Color::Green
+        THEME.fg_dim
     }
 }
 
@@ -1133,47 +1218,62 @@ fn render_memory_section(f: &mut Frame, app: &App, area: Rect) {
     use crate::memory::MemoryPressure;
 
     let Some(memory_info) = app.memory_info else {
-        let stats =
-            Paragraph::new("Memory: Loading...").style(Style::default().fg(Color::DarkGray));
+        let stats = Paragraph::new("memory loading…").style(Style::default().fg(THEME.fg_faint));
         f.render_widget(stats, area);
         return;
     };
 
-    // Simplified single-line memory display with key stats
-    let stats_text = if memory_info.total_swap > 0 {
-        format!(
-            "Memory: {:.1}GB / {:.1}GB ({:.1}%) | Pressure: {} | Free: {:.1}GB | Swap: {:.1}GB / {:.1}GB ({:.1}%)",
-            memory_info.used_memory as f64 / (1024.0 * 1024.0 * 1024.0),
-            memory_info.total_memory as f64 / (1024.0 * 1024.0 * 1024.0),
-            memory_info.memory_usage_percentage(),
-            memory_info.pressure.color_name(),
-            memory_info.free_memory() as f64 / (1024.0 * 1024.0 * 1024.0),
-            memory_info.used_swap as f64 / (1024.0 * 1024.0 * 1024.0),
-            memory_info.total_swap as f64 / (1024.0 * 1024.0 * 1024.0),
-            memory_info.swap_usage_percentage()
-        )
-    } else {
-        format!(
-            "Memory: {:.1}GB / {:.1}GB ({:.1}%) | Pressure: {} | Free: {:.1}GB",
-            memory_info.used_memory as f64 / (1024.0 * 1024.0 * 1024.0),
-            memory_info.total_memory as f64 / (1024.0 * 1024.0 * 1024.0),
-            memory_info.memory_usage_percentage(),
-            memory_info.pressure.color_name(),
-            memory_info.free_memory() as f64 / (1024.0 * 1024.0 * 1024.0)
-        )
+    let label = Style::default().fg(THEME.fg_dim);
+    let value = Style::default().fg(THEME.fg);
+    let bullet = Span::styled(" · ", Style::default().fg(THEME.fg_faint));
+
+    let pressure_color = match memory_info.pressure {
+        MemoryPressure::Green => THEME.mem,
+        MemoryPressure::Yellow => THEME.accent_warn,
+        MemoryPressure::Red => THEME.accent_crit,
     };
 
-    let title_color = match memory_info.pressure {
-        MemoryPressure::Green => Color::Green,
-        MemoryPressure::Yellow => Color::Yellow,
-        MemoryPressure::Red => Color::Red,
-    };
+    let used_gb = memory_info.used_memory as f64 / (1024.0 * 1024.0 * 1024.0);
+    let total_gb = memory_info.total_memory as f64 / (1024.0 * 1024.0 * 1024.0);
+    let free_gb = memory_info.free_memory() as f64 / (1024.0 * 1024.0 * 1024.0);
 
-    let stats = Paragraph::new(stats_text).style(
-        Style::default()
-            .fg(title_color)
-            .add_modifier(Modifier::BOLD),
-    );
+    let mut spans: Vec<Span> = vec![
+        Span::styled("memory ", label),
+        Span::styled(format!("{:.1}/{:.1} GB", used_gb, total_gb), value),
+        Span::styled(
+            format!(" ({:.0}%)", memory_info.memory_usage_percentage()),
+            Style::default().fg(THEME.mem),
+        ),
+        bullet.clone(),
+        Span::styled("pressure ", label),
+        Span::styled(
+            memory_info.pressure.color_name().to_string(),
+            Style::default().fg(pressure_color),
+        ),
+        bullet.clone(),
+        Span::styled("free ", label),
+        Span::styled(format!("{:.1} GB", free_gb), value),
+    ];
+
+    if memory_info.total_swap > 0 {
+        let used_swap = memory_info.used_swap as f64 / (1024.0 * 1024.0 * 1024.0);
+        let total_swap = memory_info.total_swap as f64 / (1024.0 * 1024.0 * 1024.0);
+        spans.extend([
+            bullet,
+            Span::styled("swap ", label),
+            Span::styled(
+                format!(
+                    "{:.1}/{:.1} GB ({:.0}%)",
+                    used_swap,
+                    total_swap,
+                    memory_info.swap_usage_percentage()
+                ),
+                value,
+            ),
+        ]);
+    }
+
+    let stats = Paragraph::new(Line::from(spans));
     f.render_widget(stats, area);
 }
 
@@ -1213,49 +1313,49 @@ fn render_kill_confirmation(f: &mut Frame, app: &App, screen_area: Rect) {
     // Dialog border
     let border_block = ratatui::widgets::Block::default()
         .borders(ratatui::widgets::Borders::ALL)
-        .border_style(Style::default().fg(Color::Red))
-        .title("Kill Process");
+        .border_style(Style::default().fg(THEME.accent_crit))
+        .title("kill process");
     f.render_widget(border_block, dialog_area);
 
     // Title
-    let title_text = "⚠️  KILL PROCESS  ⚠️";
+    let title_text = "kill process";
     let title = Paragraph::new(title_text)
         .alignment(ratatui::layout::Alignment::Center)
-        .style(Style::default().fg(Color::Red).add_modifier(Modifier::BOLD));
+        .style(
+            Style::default()
+                .fg(THEME.accent_crit)
+                .add_modifier(Modifier::BOLD),
+        );
     f.render_widget(title, dialog_chunks[0]);
 
     // Process information
     let process_info = if let Some(pid) = app.kill_target_pid {
-        format!("PID: {} - {}", pid, app.kill_target_name)
+        format!("PID {} · {}", pid, app.kill_target_name)
     } else {
-        "Unknown process".to_string()
+        "unknown process".to_string()
     };
     let process_text = Paragraph::new(process_info)
         .alignment(ratatui::layout::Alignment::Center)
-        .style(Style::default().fg(Color::White));
+        .style(Style::default().fg(THEME.fg));
     f.render_widget(process_text, dialog_chunks[2]);
 
     // Warning message
-    let warning_text = "This action cannot be undone!";
+    let warning_text = "this action cannot be undone";
     let warning = Paragraph::new(warning_text)
         .alignment(ratatui::layout::Alignment::Center)
-        .style(Style::default().fg(Color::Yellow));
+        .style(Style::default().fg(THEME.accent_warn));
     f.render_widget(warning, dialog_chunks[3]);
 
     // Options
-    let options_text = "[Y] Kill Process    [N] Cancel";
+    let options_text = "[Y] kill    [N] cancel";
     let options = Paragraph::new(options_text)
         .alignment(ratatui::layout::Alignment::Center)
-        .style(Style::default().fg(Color::Gray));
+        .style(Style::default().fg(THEME.fg_dim));
     f.render_widget(options, dialog_chunks[5]);
 }
 
 fn render_help_popup(f: &mut Frame, _app: &App) {
-    use ratatui::{
-        style::{Color, Modifier, Style},
-        text::{Line, Span, Text},
-        widgets::{Block, Borders, Clear, Paragraph, Wrap},
-    };
+    use ratatui::widgets::{Block, Borders, Clear};
 
     // Calculate popup size (80% of screen)
     let popup_area = {
@@ -1278,15 +1378,13 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from(vec![Span::styled(
             "KEYBINDS",
             Style::default()
-                .fg(Color::Yellow)
+                .fg(THEME.accent_warn)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
         Line::from(vec![Span::styled(
             "Navigation:",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD),
         )]),
         Line::from("  j/k or ↑↓     Navigate process list up/down"),
         Line::from("  g             Jump to top of process list"),
@@ -1296,9 +1394,7 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from(""),
         Line::from(vec![Span::styled(
             "Actions:",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD),
         )]),
         Line::from("  Space         Pause/Resume monitoring"),
         Line::from("  Enter         Pin/Unpin process (shows full command)"),
@@ -1314,7 +1410,7 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from(vec![Span::styled(
             "TIMELINE",
             Style::default()
-                .fg(Color::Yellow)
+                .fg(THEME.accent_warn)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
@@ -1324,7 +1420,7 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from(vec![Span::styled(
             "MEMORY PRESSURE ALGORITHM",
             Style::default()
-                .fg(Color::Yellow)
+                .fg(THEME.accent_warn)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
@@ -1332,9 +1428,7 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from(""),
         Line::from(vec![Span::styled(
             "How it works:",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD),
         )]),
         Line::from("  Queries kern.memorystatus_vm_pressure_level sysctl"),
         Line::from("  Same metric used by Activity Monitor for accuracy"),
@@ -1342,16 +1436,12 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from(""),
         Line::from(vec![Span::styled(
             "Pressure Levels:",
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD),
         )]),
         Line::from(vec![
             Span::styled(
                 "  • Green (Normal): ",
-                Style::default()
-                    .fg(Color::Green)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(THEME.mem).add_modifier(Modifier::BOLD),
             ),
             Span::raw("Adequate memory, efficient operation"),
         ]),
@@ -1359,7 +1449,7 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
             Span::styled(
                 "  • Yellow (Warning): ",
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(THEME.accent_warn)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw("Some pressure, may use compression"),
@@ -1367,13 +1457,15 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from(vec![
             Span::styled(
                 "  • Red (Critical): ",
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(THEME.accent_crit)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw("Severe pressure, performance impacted"),
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("Note: ", Style::default().fg(Color::Cyan)),
+            Span::styled("Note: ", Style::default().fg(THEME.cpu)),
             Span::raw("macOS uses memory differently than other systems."),
         ]),
         Line::from("High usage with green pressure is optimal. See README for details"),
@@ -1382,7 +1474,7 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from(vec![Span::styled(
             "ABOUT OVERSEE",
             Style::default()
-                .fg(Color::Yellow)
+                .fg(THEME.accent_warn)
                 .add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
@@ -1396,27 +1488,23 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from(vec![Span::styled(
             "Press ? or ESC to close this help",
             Style::default()
-                .fg(Color::Gray)
+                .fg(THEME.fg_dim)
                 .add_modifier(Modifier::ITALIC),
         )]),
     ];
 
     // Create the popup block
     let block = Block::default()
-        .title(" Help - Oversee System Monitor ")
-        .title_style(
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        )
+        .title(" help · oversee ")
+        .title_style(Style::default().fg(THEME.fg).add_modifier(Modifier::BOLD))
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::White));
+        .border_style(Style::default().fg(THEME.separator));
 
     // Create the paragraph widget
     let paragraph = Paragraph::new(Text::from(help_text))
         .block(block)
         .wrap(Wrap { trim: true })
-        .style(Style::default().fg(Color::White));
+        .style(Style::default().fg(THEME.fg));
 
     // Render the popup
     f.render_widget(paragraph, popup_area);
