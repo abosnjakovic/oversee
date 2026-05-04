@@ -3,6 +3,7 @@ mod cpu;
 mod gpu;
 mod memory;
 mod process;
+mod theme;
 mod tui;
 mod ui;
 
