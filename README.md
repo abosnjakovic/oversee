@@ -1,7 +1,7 @@
 A modern system monitor for macOS, inspired by htop and btop++, built in Rust with a focus on Apple Silicon performance monitoring.
 Why? I wanted to view cpu AND gpu cores. I wanted memory pressure and not just used/swap due to how macs work differently here.
 
-<img width="6016" height="3384" alt="image" src="https://github.com/user-attachments/assets/5f5ecc38-5c2a-42d9-af40-0e67419edcf1" />
+<img width="1056" height="1575" alt="image" src="https://github.com/user-attachments/assets/ca4f4249-a659-4d46-a1d1-73ae376fde2c" />
 
 
 ## Features
