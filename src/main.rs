@@ -68,6 +68,11 @@ macro_rules! profile {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
+    if std::env::args().any(|a| a == "--version" || a == "-V") {
+        println!("oversee {}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
+
     // Create channels for communication with background thread
     let (update_tx, update_rx) = mpsc::channel::<DataUpdate>();
     let (command_tx, command_rx) = mpsc::channel::<DataCommand>();

@@ -1,0 +1,31 @@
+# Configuration for release-plz (https://release-plz.dev)
+#
+# Manual two-stage flow (workflow_dispatch only):
+#
+#   1. From Actions UI, run "Release-plz". It opens
+#      "chore: release oversee v<next>" PR with bumped Cargo.toml + CHANGELOG.
+#   2. Merge the PR.
+#   3. From Actions UI, run "Release-plz" again. It detects the merged
+#      release commit and pushes the v<next> tag.
+#   4. From Actions UI, run "Release" with the tag (e.g. v0.3.1). It builds
+#      binaries, uploads to Releases, regenerates Formula/oversee.rb, and
+#      runs `cargo publish`.
+#
+# Why manual: GITHUB_TOKEN-authored tag pushes do NOT trigger downstream
+# workflows (GitHub anti-loop), so a "push: tags" trigger on release.yml
+# would never fire for release-plz-pushed tags. Going fully manual makes
+# the flow predictable and lets us re-fire any step on its own.
+
+[workspace]
+# Tag name format. NEVER combine with another tag-prefix knob — that's how
+# this repo got historical vv0.1.8 / vv.0.1.7 / vv0.2.5 artefacts.
+git_tag_name = "v{{ version }}"
+
+# release.yml's create-release job creates the GitHub Release. Don't double up.
+git_release_enable = false
+
+# release.yml's publish-crates job runs `cargo publish`. Don't double-publish.
+publish = false
+
+# Always update CHANGELOG.md as part of the release PR.
+changelog_update = true

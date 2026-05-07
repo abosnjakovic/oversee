@@ -1552,7 +1552,7 @@ mod tests {
 
     #[test]
     fn test_dot_string_format() {
-        let usage_levels = vec![0.0, 25.0, 50.0, 75.0, 100.0];
+        let usage_levels = [0.0, 25.0, 50.0, 75.0, 100.0];
 
         for usage in usage_levels.iter() {
             let (filled, empty) = generate_dot_pattern(*usage);

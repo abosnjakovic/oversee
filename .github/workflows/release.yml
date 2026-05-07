@@ -1,25 +1,24 @@
 ---
 name: Release
 
+# Manual trigger only. Run from the Actions UI with the tag (e.g. v0.3.1).
+#
+# Why manual: tags pushed by GITHUB_TOKEN (release-plz) do NOT trigger
+# downstream workflows (GitHub anti-loop), so a `push: tags` trigger here
+# would silently never fire for release-plz-created tags. Going manual is
+# also useful for re-firing a botched release without re-tagging.
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
     inputs:
-      version:
-        description: 'Release version (e.g., 0.1.5)'
+      tag:
+        description: 'Tag to release (e.g. v0.3.1). Must already exist on origin.'
         required: true
         type: string
       create_new_release:
-        description: 'Create new GitHub release'
+        description: 'Create the GitHub Release (untick if it already exists and you only want to re-run downstream jobs).'
         required: true
         type: boolean
         default: true
-      release_tag:
-        description: 'Tag name for release (defaults to v{version})'
-        required: false
-        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -32,76 +31,68 @@ jobs:
     name: Create Release
     runs-on: ubuntu-latest
     outputs:
-      upload_url: ${{ steps.create_release.outputs.upload_url }}
       version: ${{ steps.get_version.outputs.version }}
       tag: ${{ steps.get_version.outputs.tag }}
     steps:
-      - name: Get version from tag or input
+      - name: Checkout repository at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Derive version from tag
         id: get_version
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
-            # Manual trigger - use provided version
-            version="${{ github.event.inputs.version }}"
-            tag="${{ github.event.inputs.release_tag || format('v{0}', github.event.inputs.version) }}"
-          else
-            # Tag push trigger - extract from ref
-            version="${GITHUB_REF#refs/tags/v}"
-            tag="${GITHUB_REF#refs/tags/}"
-          fi
-          echo "version=${version}" >> $GITHUB_OUTPUT
-          echo "tag=${tag}" >> $GITHUB_OUTPUT
-          echo "Version: ${version}, Tag: ${tag}"
+          tag="$INPUT_TAG"
+          version="${tag#v}"
+          {
+            echo "version=$version"
+            echo "tag=$tag"
+          } >> "$GITHUB_OUTPUT"
+          echo "Version: $version, Tag: $tag"
 
       - name: Create Release
-        id: create_release
-        if: github.event_name == 'push' || github.event.inputs.create_new_release == 'true'
+        if: ${{ inputs.create_new_release }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ steps.get_version.outputs.version }}
+          TAG: ${{ steps.get_version.outputs.tag }}
         run: |
-          version="${{ steps.get_version.outputs.version }}"
-          tag="${{ steps.get_version.outputs.tag }}"
-
-          # Check if release already exists
-          if gh release view "${tag}" --repo ${{ github.repository }} &>/dev/null; then
-            echo "Release ${tag} already exists, skipping creation"
-            # Get existing release upload URL
-            upload_url=$(gh api repos/${{ github.repository }}/releases/tags/${tag} --jq '.upload_url')
-            echo "upload_url=${upload_url}" >> $GITHUB_OUTPUT
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            echo "Release $TAG already exists, skipping creation"
             exit 0
           fi
 
-          gh release create "${tag}" \
-            --repo ${{ github.repository }} \
-            --title "Release ${tag}" \
-            --notes "Release ${version}
+          notes="Release $VERSION
 
           ## Changes
-          See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/main/CHANGELOG.md)
+          See [CHANGELOG.md](https://github.com/$REPO/blob/main/CHANGELOG.md)
           for details.
 
           ## Installation
 
-          ### macOS (Apple Silicon)
+          ### Homebrew (macOS)
           \`\`\`bash
-          version=\"${version}\"
-          repo=\"${{ github.repository }}\"
-          ref=\"${tag}\"
-          curl -L \"https://github.com/\${repo}/releases/download/\${ref}/oversee-\${version}-aarch64-apple-darwin.tar.gz\" | tar xz
+          brew tap $REPO https://github.com/$REPO
+          brew install oversee
           \`\`\`
 
-          ### macOS (Intel)
+          ### cargo
           \`\`\`bash
-          version=\"${version}\"
-          repo=\"${{ github.repository }}\"
-          ref=\"${tag}\"
-          curl -L \"https://github.com/\${repo}/releases/download/\${ref}/oversee-\${version}-x86_64-apple-darwin.tar.gz\" | tar xz
-          \`\`\`" \
+          cargo install oversee
+          \`\`\`
+
+          ### Pre-built binaries
+          See assets below."
+
+          gh release create "$TAG" \
+            --repo "$REPO" \
+            --title "Release $TAG" \
+            --notes "$notes" \
             --draft=false \
             --prerelease=false
-
-          # Get upload URL for use by build jobs
-          upload_url=$(gh api repos/${{ github.repository }}/releases/tags/${tag} --jq '.upload_url')
-          echo "upload_url=${upload_url}" >> $GITHUB_OUTPUT
 
   build-release:
     name: Build Release
@@ -119,8 +110,10 @@ jobs:
             suffix: x86_64-apple-darwin
 
     steps:
-      - name: Checkout repository
+      - name: Checkout repository at tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -129,81 +122,93 @@ jobs:
           target: ${{ matrix.target }}
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+        run: cargo build --release --target "$TARGET"
+
+      - name: Smoke test --version
+        env:
+          TARGET: ${{ matrix.target }}
+        run: ./target/$TARGET/release/oversee --version
 
       - name: Create archive
+        env:
+          VERSION: ${{ needs.create-release.outputs.version }}
+          SUFFIX: ${{ matrix.suffix }}
+          TARGET: ${{ matrix.target }}
         run: |
-          cd target/${{ matrix.target }}/release
-          version="${{ needs.create-release.outputs.version }}"
-          suffix="${{ matrix.suffix }}"
-          archive_name="oversee-${version}-${suffix}.tar.gz"
-          tar czf "$archive_name" oversee
-          ls -la "$archive_name"
+          cd "target/$TARGET/release"
+          archive="oversee-$VERSION-$SUFFIX.tar.gz"
+          tar czf "$archive" oversee
+          ls -la "$archive"
 
       - name: Upload Release Asset
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+          SUFFIX: ${{ matrix.suffix }}
+          TARGET: ${{ matrix.target }}
+          TAG: ${{ needs.create-release.outputs.tag }}
         run: |
-          version="${{ needs.create-release.outputs.version }}"
-          suffix="${{ matrix.suffix }}"
-          target="${{ matrix.target }}"
-          archive_name="oversee-${version}-${suffix}.tar.gz"
-          tag="${{ needs.create-release.outputs.tag }}"
-          gh release upload "${tag}" \
-            --repo ${{ github.repository }} \
-            "target/${target}/release/${archive_name}"
+          archive="oversee-$VERSION-$SUFFIX.tar.gz"
+          gh release upload "$TAG" \
+            --repo "$REPO" \
+            "target/$TARGET/release/$archive"
 
   update-homebrew-formula:
     name: Update Homebrew Formula
     needs: [create-release, build-release]
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout main (not tag — we push back to main)
         uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
 
       - name: Calculate SHA256 hashes
         id: sha256
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+          TAG: ${{ needs.create-release.outputs.tag }}
         run: |
-          version="${{ needs.create-release.outputs.version }}"
-          repo="${{ github.repository }}"
-          tag="${{ needs.create-release.outputs.tag }}"
-
-          # Download and calculate SHA256 for Apple Silicon
-          aarch64_url="https://github.com/${repo}/releases/download/${tag}/oversee-${version}-aarch64-apple-darwin.tar.gz"
-          aarch64_sha256=$(curl -sL "${aarch64_url}" | sha256sum | cut -d' ' -f1)
-          echo "aarch64_sha256=${aarch64_sha256}" >> $GITHUB_OUTPUT
-
-          # Download and calculate SHA256 for Intel
-          x86_url="https://github.com/${repo}/releases/download/${tag}/oversee-${version}-x86_64-apple-darwin.tar.gz"
-          x86_sha256=$(curl -sL "${x86_url}" | sha256sum | cut -d' ' -f1)
-          echo "x86_sha256=${x86_sha256}" >> $GITHUB_OUTPUT
-
-          echo "Apple Silicon SHA256: ${aarch64_sha256}"
-          echo "Intel SHA256: ${x86_sha256}"
+          aarch64_url="https://github.com/$REPO/releases/download/$TAG/oversee-$VERSION-aarch64-apple-darwin.tar.gz"
+          aarch64_sha256=$(curl -sL "$aarch64_url" | sha256sum | cut -d' ' -f1)
+          x86_url="https://github.com/$REPO/releases/download/$TAG/oversee-$VERSION-x86_64-apple-darwin.tar.gz"
+          x86_sha256=$(curl -sL "$x86_url" | sha256sum | cut -d' ' -f1)
+          {
+            echo "aarch64_sha256=$aarch64_sha256"
+            echo "x86_sha256=$x86_sha256"
+          } >> "$GITHUB_OUTPUT"
+          echo "Apple Silicon: $aarch64_sha256"
+          echo "Intel:         $x86_sha256"
 
       - name: Generate Homebrew Formula
-        id: formula
+        env:
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.create-release.outputs.version }}
+          TAG: ${{ needs.create-release.outputs.tag }}
+          AARCH64_SHA: ${{ steps.sha256.outputs.aarch64_sha256 }}
+          X86_SHA: ${{ steps.sha256.outputs.x86_sha256 }}
         run: |
-          version="${{ needs.create-release.outputs.version }}"
-          repo="${{ github.repository }}"
-          tag="${{ needs.create-release.outputs.tag }}"
-          aarch64_sha256="${{ steps.sha256.outputs.aarch64_sha256 }}"
-          x86_sha256="${{ steps.sha256.outputs.x86_sha256 }}"
-
-          cat > oversee.rb << 'EOF'
+          mkdir -p Formula
+          cat > Formula/oversee.rb << EOF
           class Oversee < Formula
             desc "A modern system monitor for macOS with Apple Silicon GPU support"
-            homepage "https://github.com/REPO_PLACEHOLDER"
-            version "VERSION_PLACEHOLDER"
+            homepage "https://github.com/$REPO"
+            version "$VERSION"
 
-            if Hardware::CPU.arm?
-              url "https://github.com/REPO_PLACEHOLDER/releases/download/TAG_PLACEHOLDER/oversee-VERSION_PLACEHOLDER-aarch64-apple-darwin.tar.gz"
-              sha256 "AARCH64_SHA256_PLACEHOLDER"
-            else
-              url "https://github.com/REPO_PLACEHOLDER/releases/download/TAG_PLACEHOLDER/oversee-VERSION_PLACEHOLDER-x86_64-apple-darwin.tar.gz"
-              sha256 "X86_SHA256_PLACEHOLDER"
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/$REPO/releases/download/$TAG/oversee-$VERSION-aarch64-apple-darwin.tar.gz"
+                sha256 "$AARCH64_SHA"
+              else
+                url "https://github.com/$REPO/releases/download/$TAG/oversee-$VERSION-x86_64-apple-darwin.tar.gz"
+                sha256 "$X86_SHA"
+              end
             end
 
             def install
@@ -215,53 +220,47 @@ jobs:
             end
           end
           EOF
-
-          # Replace placeholders using | delimiter to avoid issues with forward slashes
-          sed -i "s|REPO_PLACEHOLDER|${repo}|g" oversee.rb
-          sed -i "s|VERSION_PLACEHOLDER|${version}|g" oversee.rb
-          sed -i "s|TAG_PLACEHOLDER|${tag}|g" oversee.rb
-          sed -i "s|AARCH64_SHA256_PLACEHOLDER|${aarch64_sha256}|g" oversee.rb
-          sed -i "s|X86_SHA256_PLACEHOLDER|${x86_sha256}|g" oversee.rb
-
           echo "Generated formula:"
-          cat oversee.rb
+          cat Formula/oversee.rb
 
-      - name: Update Homebrew Formula in Main Repo
+      - name: Commit and push formula update
         env:
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.create-release.outputs.version }}
         run: |
-          # Configure git
-          git config --global user.name "github-actions[bot]"
-          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # Clone the main repository
-          main_repo_url="https://x-access-token:${HOMEBREW_TAP_TOKEN}@github.com/${{ github.repository }}.git"
-          git clone "${main_repo_url}" main-repo
-
-          # Copy formula and commit
-          cd main-repo
-          mkdir -p Formula
-          cp ../oversee.rb Formula/oversee.rb
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
           git add Formula/oversee.rb
           if git diff --staged --quiet; then
             echo "No changes to commit"
-          else
-            git commit -m "Update oversee formula to ${{ needs.create-release.outputs.version }}"
-            git push origin main
-            echo "Formula updated successfully!"
-            echo "Users can install with:"
-            echo "  brew tap ${{ github.repository }} https://github.com/${{ github.repository }}"
-            echo "  brew install oversee"
+            exit 0
           fi
+
+          git commit -m "Update oversee formula to $VERSION"
+
+          # main may have advanced (release-plz PR merge sits above the
+          # release commit the tag points at). Retry pull --rebase to handle
+          # concurrent updates without wedging the job.
+          for attempt in 1 2 3; do
+            if git push origin HEAD:main; then
+              echo "Push succeeded on attempt $attempt"
+              exit 0
+            fi
+            echo "Push attempt $attempt rejected; rebasing on origin/main and retrying"
+            git pull --rebase origin main
+          done
+          echo "Failed to push formula update after 3 attempts"
+          exit 1
 
   publish-crates:
     name: Publish to crates.io
     needs: [create-release, build-release]
     runs-on: macos-latest
     steps:
-      - name: Checkout repository
+      - name: Checkout repository at tag
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -269,6 +268,6 @@ jobs:
           toolchain: stable
 
       - name: Publish to crates.io
-        run: cargo publish --allow-dirty --token ${{ secrets.CRATES_IO_TOKEN }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+        run: cargo publish --allow-dirty

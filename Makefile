@@ -38,7 +38,9 @@ help:
 	@echo "  make debug-homebrew  - Debug Homebrew formula issues"
 	@echo ""
 	@echo "$(GREEN)Development:$(NC)"
-	@echo "  make lint            - Format code and run clippy"
+	@echo "  make lint            - cargo fmt + clippy --all-targets -D warnings"
+	@echo "  make test            - cargo test"
+	@echo "  make doc             - cargo doc --no-deps -D rustdoc warnings"
 	@echo ""
 	@echo "$(GREEN)Utilities:$(NC)"
 	@echo "  make clean           - Clean build artifacts"
@@ -137,14 +139,24 @@ clean:
 	cargo clean
 	@echo "$(GREEN)✓ Cleaned$(NC)"
 
-# Lint - format and check code
+# Lint - format and check code (mirrors ci.yml)
 .PHONY: lint
 lint:
 	@echo "$(BLUE)Formatting code...$(NC)"
 	cargo fmt
 	@echo "$(BLUE)Running clippy...$(NC)"
-	cargo clippy -- -D warnings
+	cargo clippy --all-targets -- -D warnings
 	@echo "$(GREEN)✓ Lint passed$(NC)"
+
+# Test - run unit and integration tests
+.PHONY: test
+test:
+	cargo test
+
+# Doc - build docs with warnings as errors (mirrors ci.yml)
+.PHONY: doc
+doc:
+	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
 
 # Create release archives (for testing Homebrew formula)
 .PHONY: create-archives
