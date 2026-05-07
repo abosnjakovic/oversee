@@ -1,13 +1,17 @@
 ---
 name: Release
 
-# Manual trigger only. Run from the Actions UI with the tag (e.g. v0.3.1).
-#
-# Why manual: tags pushed by GITHUB_TOKEN (release-plz) do NOT trigger
-# downstream workflows (GitHub anti-loop), so a `push: tags` trigger here
-# would silently never fire for release-plz-created tags. Going manual is
-# also useful for re-firing a botched release without re-tagging.
+# Two triggers:
+#   - workflow_dispatch: primary path. release-plz uses GITHUB_TOKEN to push
+#     tags, which (per GitHub anti-loop) does NOT fire downstream workflows.
+#     So users dispatch this manually with the tag after release-plz has
+#     pushed it.
+#   - push: tags: [v*]: fallback for tags pushed manually from local — those
+#     DO fire downstream workflows.
 on:
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       tag:
@@ -37,14 +41,15 @@ jobs:
       - name: Checkout repository at tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Derive version from tag
         id: get_version
         env:
           INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          tag="$INPUT_TAG"
+          tag="${INPUT_TAG:-$REF_NAME}"
           version="${tag#v}"
           {
             echo "version=$version"
@@ -53,7 +58,7 @@ jobs:
           echo "Version: $version, Tag: $tag"
 
       - name: Create Release
-        if: ${{ inputs.create_new_release }}
+        if: ${{ github.event_name == 'push' || inputs.create_new_release }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
@@ -113,7 +118,7 @@ jobs:
       - name: Checkout repository at tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -129,7 +134,11 @@ jobs:
       - name: Smoke test --version
         env:
           TARGET: ${{ matrix.target }}
-        run: ./target/$TARGET/release/oversee --version
+          VERSION: ${{ needs.create-release.outputs.version }}
+        run: |
+          out=$("./target/${TARGET}/release/oversee" --version)
+          echo "$out"
+          echo "$out" | grep -F "$VERSION"
 
       - name: Create archive
         env:
@@ -200,6 +209,7 @@ jobs:
             desc "A modern system monitor for macOS with Apple Silicon GPU support"
             homepage "https://github.com/$REPO"
             version "$VERSION"
+            license "MIT"
 
             on_macos do
               if Hardware::CPU.arm?
@@ -216,7 +226,7 @@ jobs:
             end
 
             test do
-              system "#{bin}/oversee", "--version"
+              assert_match version.to_s, shell_output("#{bin}/oversee --version")
             end
           end
           EOF
@@ -260,7 +270,7 @@ jobs:
       - name: Checkout repository at tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag }}
+          ref: ${{ inputs.tag || github.ref_name }}
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1

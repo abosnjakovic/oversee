@@ -33,6 +33,10 @@ help:
 	@echo "  make publish-crates  - Actually publish to crates.io"
 	@echo "  make publish-homebrew - Actually update Homebrew tap"
 	@echo ""
+	@echo "$(GREEN)release-plz (local previews):$(NC)"
+	@echo "  make release-plz-update - Preview next version bump + changelog"
+	@echo "  make release-plz-pr     - Open the release PR via gh auth token"
+	@echo ""
 	@echo "$(GREEN)Debugging:$(NC)"
 	@echo "  make debug-crates    - Debug crates.io publishing issues"
 	@echo "  make debug-homebrew  - Debug Homebrew formula issues"
@@ -157,6 +161,20 @@ test:
 .PHONY: doc
 doc:
 	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
+
+# Preview release-plz's next version bump + changelog without opening a PR.
+.PHONY: release-plz-update
+release-plz-update:
+	@command -v release-plz >/dev/null 2>&1 || { echo "$(RED)install release-plz: cargo install release-plz$(NC)"; exit 1; }
+	release-plz update
+
+# Open the release PR locally (uses your gh auth token; same effect as
+# triggering the release-plz workflow from the Actions UI).
+.PHONY: release-plz-pr
+release-plz-pr:
+	@command -v release-plz >/dev/null 2>&1 || { echo "$(RED)install release-plz: cargo install release-plz$(NC)"; exit 1; }
+	@command -v gh >/dev/null 2>&1 || { echo "$(RED)install gh: brew install gh$(NC)"; exit 1; }
+	release-plz release-pr --git-token "$$(gh auth token)"
 
 # Create release archives (for testing Homebrew formula)
 .PHONY: create-archives

@@ -1,4 +1,4 @@
-name: Release-plz
+name: release-plz
 
 # Manual trigger only. This workflow runs twice per release:
 #   1. First run opens the release PR.
@@ -34,7 +34,6 @@ jobs:
           # release-plz needs full history to compute version bumps from
           # Conventional Commits across all tags.
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
