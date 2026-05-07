@@ -33,12 +33,18 @@ help:
 	@echo "  make publish-crates  - Actually publish to crates.io"
 	@echo "  make publish-homebrew - Actually update Homebrew tap"
 	@echo ""
+	@echo "$(GREEN)release-plz (local previews):$(NC)"
+	@echo "  make release-plz-update - Preview next version bump + changelog"
+	@echo "  make release-plz-pr     - Open the release PR via gh auth token"
+	@echo ""
 	@echo "$(GREEN)Debugging:$(NC)"
 	@echo "  make debug-crates    - Debug crates.io publishing issues"
 	@echo "  make debug-homebrew  - Debug Homebrew formula issues"
 	@echo ""
 	@echo "$(GREEN)Development:$(NC)"
-	@echo "  make lint            - Format code and run clippy"
+	@echo "  make lint            - cargo fmt + clippy --all-targets -D warnings"
+	@echo "  make test            - cargo test"
+	@echo "  make doc             - cargo doc --no-deps -D rustdoc warnings"
 	@echo ""
 	@echo "$(GREEN)Utilities:$(NC)"
 	@echo "  make clean           - Clean build artifacts"
@@ -137,14 +143,38 @@ clean:
 	cargo clean
 	@echo "$(GREEN)✓ Cleaned$(NC)"
 
-# Lint - format and check code
+# Lint - format and check code (mirrors ci.yml)
 .PHONY: lint
 lint:
 	@echo "$(BLUE)Formatting code...$(NC)"
 	cargo fmt
 	@echo "$(BLUE)Running clippy...$(NC)"
-	cargo clippy -- -D warnings
+	cargo clippy --all-targets -- -D warnings
 	@echo "$(GREEN)✓ Lint passed$(NC)"
+
+# Test - run unit and integration tests
+.PHONY: test
+test:
+	cargo test
+
+# Doc - build docs with warnings as errors (mirrors ci.yml)
+.PHONY: doc
+doc:
+	RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --document-private-items
+
+# Preview release-plz's next version bump + changelog without opening a PR.
+.PHONY: release-plz-update
+release-plz-update:
+	@command -v release-plz >/dev/null 2>&1 || { echo "$(RED)install release-plz: cargo install release-plz$(NC)"; exit 1; }
+	release-plz update
+
+# Open the release PR locally (uses your gh auth token; same effect as
+# triggering the release-plz workflow from the Actions UI).
+.PHONY: release-plz-pr
+release-plz-pr:
+	@command -v release-plz >/dev/null 2>&1 || { echo "$(RED)install release-plz: cargo install release-plz$(NC)"; exit 1; }
+	@command -v gh >/dev/null 2>&1 || { echo "$(RED)install gh: brew install gh$(NC)"; exit 1; }
+	release-plz release-pr --git-token "$$(gh auth token)"
 
 # Create release archives (for testing Homebrew formula)
 .PHONY: create-archives

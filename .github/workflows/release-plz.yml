@@ -1,0 +1,46 @@
+name: release-plz
+
+# Manual trigger only. This workflow runs twice per release:
+#   1. First run opens the release PR.
+#   2. After merging the PR, second run pushes the tag.
+# Then the user manually triggers "Release" with the tag value.
+#
+# Auto-running on push to main was deliberately rejected: too noisy on
+# unrelated commits, and the GITHUB_TOKEN tag-push anti-loop means the
+# downstream Release workflow wouldn't fire on the auto-pushed tag anyway.
+on:
+  workflow_dispatch:
+
+# release-plz needs to push commits, open PRs, and create tags.
+# IMPORTANT: GitHub Actions must also be allowed to open PRs at the repo level:
+#   Settings → Actions → General → Workflow permissions → tick
+#   "Allow GitHub Actions to create and approve pull requests".
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: release-plz-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-plz:
+    name: release-plz
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # release-plz needs full history to compute version bumps from
+          # Conventional Commits across all tags.
+          fetch-depth: 0
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: Run release-plz
+        uses: MarcoIeni/release-plz-action@v0.5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
