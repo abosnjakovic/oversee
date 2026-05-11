@@ -17,6 +17,15 @@ sysinfo = "0.32"
 crossterm = "0.28"
 libc = "0.2"
 
+[features]
+profile = []
+
+[profile.release]
+debug = "line-tables-only"
+lto = "thin"
+codegen-units = 1
+strip = "none"
+
 # TODO: Fork https://github.com/NixOS/nixpkgs
 # 2. Copy nixpkgs-package.nix to pkgs/by-name/ov/oversee/package.nix
 # 3. Get hashes and fill them in

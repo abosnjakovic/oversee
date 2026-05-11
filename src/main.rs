@@ -38,15 +38,19 @@ pub enum DataCommand {
     Resume,
     Stop,
     ChangeSortMode,
+    SetGpuActive(bool),
 }
 use std::error::Error;
+#[cfg(feature = "profile")]
 use std::fs::OpenOptions;
+#[cfg(feature = "profile")]
 use std::io::Write;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Log timing data to /tmp/oversee-profile.log for performance analysis
+/// Log timing data to /tmp/oversee-profile.log. Active only with `--features profile`.
+#[cfg(feature = "profile")]
 fn log_timing(label: &str, duration_ms: u128) {
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
@@ -57,7 +61,8 @@ fn log_timing(label: &str, duration_ms: u128) {
     }
 }
 
-/// Macro to time an expression and log the result
+/// Time an expression and log the result. No-op when the `profile` feature is off.
+#[cfg(feature = "profile")]
 macro_rules! profile {
     ($label:expr, $expr:expr) => {{
         let start = Instant::now();
@@ -65,6 +70,11 @@ macro_rules! profile {
         log_timing($label, start.elapsed().as_millis());
         result
     }};
+}
+
+#[cfg(not(feature = "profile"))]
+macro_rules! profile {
+    ($label:expr, $expr:expr) => {{ $expr }};
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -145,14 +155,17 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                         processes: process_monitor.get_processes().to_vec(),
                     });
                 }
+                DataCommand::SetGpuActive(active) => gpu_monitor.set_active(active),
             }
         }
 
         if !paused {
             let now = Instant::now();
 
-            // Update everything every 1 second
-            if now.duration_since(last_update) >= Duration::from_secs(1) {
+            // Update everything every 2 seconds. Each tick drives a sysinfo
+            // process refresh which on macOS dispatches work across libdispatch
+            // workers; halving the rate halves that idle cost.
+            if now.duration_since(last_update) >= Duration::from_secs(2) {
                 // CPU
                 profile!("cpu_refresh", cpu_monitor.refresh());
                 let usages = cpu_monitor.cpu_usages();
@@ -165,11 +178,11 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                 profile!("memory_refresh", memory_monitor.refresh());
                 let mem_info = memory_monitor.get_memory_info();
 
-                // Processes: CPU-only refresh every second, full refresh every 5 seconds
-                // Port refresh every 15 seconds (lsof is expensive)
+                // Processes: CPU-only refresh every 2 seconds, full refresh every 10 seconds.
+                // Port refresh every 15 seconds (lsof is expensive).
                 let include_ports = now.duration_since(last_port_update) >= Duration::from_secs(15);
                 let full_refresh =
-                    now.duration_since(last_full_process_refresh) >= Duration::from_secs(5);
+                    now.duration_since(last_full_process_refresh) >= Duration::from_secs(10);
 
                 if include_ports {
                     profile!(
@@ -189,6 +202,7 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                 }
 
                 // Send incremental updates (only new values, not full histories)
+                #[cfg(feature = "profile")]
                 let send_start = Instant::now();
 
                 // CPU: send current values for each core
@@ -218,6 +232,7 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                 let _ = tx.send(DataUpdate::Processes {
                     processes: process_monitor.get_processes().to_vec(),
                 });
+                #[cfg(feature = "profile")]
                 log_timing("channel_send_all", send_start.elapsed().as_millis());
 
                 last_update = now;

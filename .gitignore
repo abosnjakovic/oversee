@@ -7,3 +7,6 @@ scripts/.env
 
 # Test files
 test_homebrew_formula.sh
+
+# Perf baselines (machine-specific)
+perf/baseline/

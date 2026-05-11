@@ -157,6 +157,19 @@ lint:
 test:
 	cargo test
 
+# Perf - measure idle CPU and capture a samply baseline.
+# Re-run after any change; results land in perf/baseline/.
+.PHONY: perf
+perf:
+	@command -v samply >/dev/null 2>&1 || { echo "$(RED)install samply: cargo install samply$(NC)"; exit 1; }
+	./perf/measure.sh
+
+# Perf record - capture a 30s samply profile of the release binary.
+.PHONY: perf-record
+perf-record:
+	@command -v samply >/dev/null 2>&1 || { echo "$(RED)install samply: cargo install samply$(NC)"; exit 1; }
+	./perf/record.sh
+
 # Doc - build docs with warnings as errors (mirrors ci.yml)
 .PHONY: doc
 doc:
