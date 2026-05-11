@@ -390,16 +390,14 @@ impl ProcessMonitor {
             .map(|(pid, process)| {
                 let process_pid = pid.as_u32();
 
-                // Cheap path: existing entry with refreshed CPU only.
-                if !full_refresh {
-                    if let Some(mut existing) = prev.remove(&process_pid) {
-                        existing.cpu_usage = process.cpu_usage();
-                        existing.gpu_usage =
-                            Self::estimate_gpu_usage(&existing.name, existing.cpu_usage);
-                        return existing;
-                    }
-                    // New pid discovered between full refreshes: fall through
-                    // to the full build below so it gets a complete record.
+                // Cheap path: existing entry with refreshed CPU only. New pids
+                // discovered between full refreshes fall through to the full
+                // build below so they get a complete record.
+                if !full_refresh && let Some(mut existing) = prev.remove(&process_pid) {
+                    existing.cpu_usage = process.cpu_usage();
+                    existing.gpu_usage =
+                        Self::estimate_gpu_usage(&existing.name, existing.cpu_usage);
+                    return existing;
                 }
 
                 let name = process.name().to_string_lossy().to_string();

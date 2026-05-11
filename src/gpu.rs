@@ -182,10 +182,10 @@ impl GpuMonitor {
         while !state.should_stop.load(Ordering::Relaxed) {
             // Skip the powermetrics subprocess entirely when the GPU panel is hidden.
             // The 5s sleep below still runs so we resume promptly when re-activated.
-            if state.active.load(Ordering::Relaxed) {
-                if let Some(util) = Self::get_gpu_utilization_from_powermetrics() {
-                    state.set_utilization(util);
-                }
+            if state.active.load(Ordering::Relaxed)
+                && let Some(util) = Self::get_gpu_utilization_from_powermetrics()
+            {
+                state.set_utilization(util);
             }
 
             // Poll every 5 seconds (increased from 2s for lower overhead)
