@@ -230,9 +230,10 @@ impl App {
     }
 
     pub fn handle_event(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
-        // Poll with a short timeout for responsive UI
+        // Poll timeout sets the idle wakeup floor. Crossterm returns immediately
+        // when an event arrives, so key latency is unaffected by this value.
         #[allow(clippy::collapsible_if)] // Suggested fix uses unstable let-else syntax
-        if event::poll(Duration::from_millis(16))? {
+        if event::poll(Duration::from_millis(100))? {
             if let Event::Key(key) = event::read()? {
                 self.handle_key_event(key);
                 return Ok(true);
@@ -351,6 +352,9 @@ impl App {
             }
             KeyCode::Char('v') => {
                 self.gpu_visible = !self.gpu_visible;
+                let _ = self
+                    .command_tx
+                    .send(DataCommand::SetGpuActive(self.gpu_visible));
             }
             KeyCode::Char('K') => {
                 let processes = self.get_filtered_processes();

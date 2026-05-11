@@ -1,13 +1,17 @@
 use std::collections::HashMap;
 use std::ffi::CStr;
+#[cfg(feature = "profile")]
 use std::fs::OpenOptions;
+#[cfg(feature = "profile")]
 use std::io::Write as IoWrite;
 use std::mem;
 use std::process::Command;
+#[cfg(feature = "profile")]
 use std::time::Instant;
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind, Users};
 
-/// Log timing data to /tmp/oversee-profile.log for performance analysis
+/// Log timing data to /tmp/oversee-profile.log. Active only with `--features profile`.
+#[cfg(feature = "profile")]
 fn log_timing(label: &str, duration_ms: u128) {
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
@@ -168,17 +172,20 @@ fn get_process_ports() -> HashMap<u32, Vec<PortInfo>> {
     let mut port_map = HashMap::new();
 
     // Run lsof command to get network connections
+    #[cfg(feature = "profile")]
     let lsof_start = Instant::now();
     let output = match Command::new("lsof").args(["-i", "-P", "-n"]).output() {
         Ok(output) => output,
         Err(_) => return port_map, // lsof not available or failed
     };
+    #[cfg(feature = "profile")]
     log_timing("lsof_command", lsof_start.elapsed().as_millis());
 
     if !output.status.success() {
         return port_map;
     }
 
+    #[cfg(feature = "profile")]
     let parse_start = Instant::now();
     let output_str = String::from_utf8_lossy(&output.stdout);
 
@@ -196,6 +203,7 @@ fn get_process_ports() -> HashMap<u32, Vec<PortInfo>> {
                 .push(port_info.1);
         }
     }
+    #[cfg(feature = "profile")]
     log_timing("lsof_parse", parse_start.elapsed().as_millis());
 
     port_map
@@ -309,11 +317,26 @@ impl ProcessMonitor {
         }
     }
 
+    /// Heuristic GPU usage estimate from process name + CPU. Kept private so the
+    /// cheap cpu-only refresh path and the full rebuild path stay in sync.
+    fn estimate_gpu_usage(name: &str, cpu: f32) -> f32 {
+        if name.contains("Renderer") || name.contains("GPU") {
+            (cpu * 0.3).min(5.0)
+        } else if name.contains("WindowServer") || name.contains("loginwindow") {
+            2.0 + (cpu * 0.2).min(3.0)
+        } else if name.contains("VTDecoder") || name.contains("VideoToolbox") {
+            10.0 + (cpu * 0.5).min(20.0)
+        } else {
+            0.0
+        }
+    }
+
     /// Refresh process information.
     /// - `include_ports`: Whether to run lsof to get port information (expensive)
     /// - `full_refresh`: If true, refresh memory/user/cmd info; if false, only refresh CPU usage
     pub fn refresh(&mut self, include_ports: bool, full_refresh: bool) {
         // Refresh process information
+        #[cfg(feature = "profile")]
         let sysinfo_start = Instant::now();
 
         // CPU-only refresh is faster; full refresh includes memory and user info
@@ -330,6 +353,7 @@ impl ProcessMonitor {
 
         self.system
             .refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind);
+        #[cfg(feature = "profile")]
         log_timing(
             if full_refresh {
                 "sysinfo_refresh_full"
@@ -346,12 +370,36 @@ impl ProcessMonitor {
             HashMap::new()
         };
 
+        // On cpu-only refreshes we can reuse the previously-built ProcessInfo
+        // for each pid and just mutate its CPU/GPU fields. This skips the
+        // per-process string allocations for name/cmd/user/cwd/exe.
+        let mut prev: HashMap<u32, ProcessInfo> = if full_refresh {
+            HashMap::new()
+        } else {
+            std::mem::take(&mut self.processes)
+                .into_iter()
+                .map(|p| (p.pid, p))
+                .collect()
+        };
+
         // Convert to our ProcessInfo format
         self.processes = self
             .system
             .processes()
             .iter()
             .map(|(pid, process)| {
+                let process_pid = pid.as_u32();
+
+                // Cheap path: existing entry with refreshed CPU only. New pids
+                // discovered between full refreshes fall through to the full
+                // build below so they get a complete record.
+                if !full_refresh && let Some(mut existing) = prev.remove(&process_pid) {
+                    existing.cpu_usage = process.cpu_usage();
+                    existing.gpu_usage =
+                        Self::estimate_gpu_usage(&existing.name, existing.cpu_usage);
+                    return existing;
+                }
+
                 let name = process.name().to_string_lossy().to_string();
 
                 // Get full command line, fall back to name if empty
@@ -392,23 +440,8 @@ impl ProcessMonitor {
                     "unknown".to_string()
                 };
 
-                // Simulate GPU usage based on process type
-                // Real GPU usage per process is complex on macOS
-                let gpu_usage = if name.contains("Renderer") || name.contains("GPU") {
-                    // Browser renderer and GPU processes use some GPU
-                    (process.cpu_usage() * 0.3).min(5.0)
-                } else if name.contains("WindowServer") || name.contains("loginwindow") {
-                    // Window compositor uses GPU
-                    2.0 + (process.cpu_usage() * 0.2).min(3.0)
-                } else if name.contains("VTDecoder") || name.contains("VideoToolbox") {
-                    // Video decoding processes
-                    10.0 + (process.cpu_usage() * 0.5).min(20.0)
-                } else {
-                    // Most processes don't use GPU
-                    0.0
-                };
+                let gpu_usage = Self::estimate_gpu_usage(&name, process.cpu_usage());
 
-                let process_pid = pid.as_u32();
                 let ports = port_map.get(&process_pid).cloned().unwrap_or_default();
 
                 let cwd = process.cwd().map(|p| p.to_string_lossy().into_owned());

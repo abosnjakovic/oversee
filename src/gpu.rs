@@ -1,12 +1,17 @@
 use std::collections::VecDeque;
+#[cfg(feature = "profile")]
 use std::fs::OpenOptions;
+#[cfg(feature = "profile")]
 use std::io::Write as IoWrite;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+#[cfg(feature = "profile")]
+use std::time::Instant;
 
-/// Log timing data to /tmp/oversee-profile.log for performance analysis
+/// Log timing data to /tmp/oversee-profile.log. Active only with `--features profile`.
+#[cfg(feature = "profile")]
 fn log_timing(label: &str, duration_ms: u128) {
     if let Ok(mut file) = OpenOptions::new()
         .create(true)
@@ -55,6 +60,9 @@ struct PowermetricsState {
     utilization_bits: AtomicU32,
     /// Signal to stop the background thread
     should_stop: AtomicBool,
+    /// When false, the background loop skips spawning `powermetrics`.
+    /// Updated from the data collector when the user toggles the GPU panel.
+    active: AtomicBool,
 }
 
 impl PowermetricsState {
@@ -62,6 +70,7 @@ impl PowermetricsState {
         Self {
             utilization_bits: AtomicU32::new(0.0_f32.to_bits()),
             should_stop: AtomicBool::new(false),
+            active: AtomicBool::new(true),
         }
     }
 
@@ -130,6 +139,12 @@ impl GpuMonitor {
         self.available
     }
 
+    /// Toggle whether the background thread spawns `powermetrics`. When the GPU
+    /// panel is hidden we skip the subprocess to drop idle CPU.
+    pub fn set_active(&self, active: bool) {
+        self.state.active.store(active, Ordering::Relaxed);
+    }
+
     pub fn refresh(&mut self) {
         if !self.available {
             return;
@@ -165,7 +180,11 @@ impl GpuMonitor {
         thread::sleep(Duration::from_millis(500));
 
         while !state.should_stop.load(Ordering::Relaxed) {
-            if let Some(util) = Self::get_gpu_utilization_from_powermetrics() {
+            // Skip the powermetrics subprocess entirely when the GPU panel is hidden.
+            // The 5s sleep below still runs so we resume promptly when re-activated.
+            if state.active.load(Ordering::Relaxed)
+                && let Some(util) = Self::get_gpu_utilization_from_powermetrics()
+            {
                 state.set_utilization(util);
             }
 
@@ -294,11 +313,13 @@ impl GpuMonitor {
         // Run powermetrics to get GPU stats
         // -i 200 = 200ms sample (reduced from 500ms for faster response)
         // -n 1 = one sample only
+        #[cfg(feature = "profile")]
         let start = Instant::now();
         let output = Command::new("powermetrics")
             .args(["--sampler", "gpu_power", "-i", "200", "-n", "1"])
             .output()
             .ok()?;
+        #[cfg(feature = "profile")]
         log_timing("powermetrics_command", start.elapsed().as_millis());
 
         if !output.status.success() {
