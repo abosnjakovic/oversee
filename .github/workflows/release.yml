@@ -1,28 +1,19 @@
 ---
 name: Release
 
-# Two triggers:
-#   - workflow_dispatch: primary path. release-plz uses GITHUB_TOKEN to push
-#     tags, which (per GitHub anti-loop) does NOT fire downstream workflows.
-#     So users dispatch this manually with the tag after release-plz has
-#     pushed it.
-#   - push: tags: [v*]: fallback for tags pushed manually from local — those
-#     DO fire downstream workflows.
+# One-click release.
+#
+# Click "Run workflow" on this action. It will:
+#   1. Compute the next version from Conventional Commits since the last tag.
+#   2. Bump Cargo.toml + CHANGELOG.md and push the commit + tag to main.
+#   3. Create the GitHub Release.
+#   4. Build macOS Apple Silicon + Intel binaries, attach tarballs.
+#   5. Regenerate Formula/oversee.rb with the new SHAs and push to main.
+#   6. Publish to crates.io.
+#
+# No PR to merge, no tag input, no second trigger.
 on:
-  push:
-    tags:
-      - "v*"
   workflow_dispatch:
-    inputs:
-      tag:
-        description: 'Tag to release (e.g. v0.3.1). Must already exist on origin.'
-        required: true
-        type: string
-      create_new_release:
-        description: 'Create the GitHub Release (untick if it already exists and you only want to re-run downstream jobs).'
-        required: true
-        type: boolean
-        default: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -30,40 +21,83 @@ env:
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  create-release:
-    name: Create Release
+  bump-and-tag:
+    name: Bump version + push tag
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.get_version.outputs.version }}
-      tag: ${{ steps.get_version.outputs.tag }}
+      version: ${{ steps.bump.outputs.version }}
+      tag: ${{ steps.bump.outputs.tag }}
+      released: ${{ steps.bump.outputs.released }}
     steps:
-      - name: Checkout repository at tag
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Derive version from tag
-        id: get_version
+      - name: Install release-plz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: release-plz
+
+      - name: Bump version + commit + tag
+        id: bump
         env:
-          INPUT_TAG: ${{ inputs.tag }}
-          REF_NAME: ${{ github.ref_name }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          tag="${INPUT_TAG:-$REF_NAME}"
-          version="${tag#v}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          before=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
+          release-plz update
+          after=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
+
+          if [ "$before" = "$after" ]; then
+            echo "No release-worthy commits since v${before}. Nothing to do." >&2
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          tag="v${after}"
+          git add -A
+          git commit -m "chore: release ${tag}"
+          git tag "$tag"
+
+          # Push commit then tag. Same workflow run continues, so the
+          # GITHUB_TOKEN anti-loop on tag pushes does not matter here.
+          git push origin main
+          git push origin "$tag"
+
           {
-            echo "version=$version"
-            echo "tag=$tag"
+            echo "version=${after}"
+            echo "tag=${tag}"
+            echo "released=true"
           } >> "$GITHUB_OUTPUT"
-          echo "Version: $version, Tag: $tag"
+          echo "Released ${tag}"
+
+  create-github-release:
+    name: Create GitHub Release
+    needs: bump-and-tag
+    if: needs.bump-and-tag.outputs.released == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump-and-tag.outputs.tag }}
 
       - name: Create Release
-        if: ${{ github.event_name == 'push' || inputs.create_new_release }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          VERSION: ${{ steps.get_version.outputs.version }}
-          TAG: ${{ steps.get_version.outputs.tag }}
+          VERSION: ${{ needs.bump-and-tag.outputs.version }}
+          TAG: ${{ needs.bump-and-tag.outputs.tag }}
         run: |
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
             echo "Release $TAG already exists, skipping creation"
@@ -101,7 +135,8 @@ jobs:
 
   build-release:
     name: Build Release
-    needs: create-release
+    needs: [bump-and-tag, create-github-release]
+    if: needs.bump-and-tag.outputs.released == 'true'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -113,12 +148,11 @@ jobs:
           - os: macos-15-intel
             target: x86_64-apple-darwin
             suffix: x86_64-apple-darwin
-
     steps:
-      - name: Checkout repository at tag
+      - name: Checkout at tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.bump-and-tag.outputs.tag }}
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
@@ -134,7 +168,7 @@ jobs:
       - name: Smoke test --version
         env:
           TARGET: ${{ matrix.target }}
-          VERSION: ${{ needs.create-release.outputs.version }}
+          VERSION: ${{ needs.bump-and-tag.outputs.version }}
         run: |
           out=$("./target/${TARGET}/release/oversee" --version)
           echo "$out"
@@ -142,7 +176,7 @@ jobs:
 
       - name: Create archive
         env:
-          VERSION: ${{ needs.create-release.outputs.version }}
+          VERSION: ${{ needs.bump-and-tag.outputs.version }}
           SUFFIX: ${{ matrix.suffix }}
           TARGET: ${{ matrix.target }}
         run: |
@@ -155,10 +189,10 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
-          VERSION: ${{ needs.create-release.outputs.version }}
+          VERSION: ${{ needs.bump-and-tag.outputs.version }}
           SUFFIX: ${{ matrix.suffix }}
           TARGET: ${{ matrix.target }}
-          TAG: ${{ needs.create-release.outputs.tag }}
+          TAG: ${{ needs.bump-and-tag.outputs.tag }}
         run: |
           archive="oversee-$VERSION-$SUFFIX.tar.gz"
           gh release upload "$TAG" \
@@ -167,10 +201,11 @@ jobs:
 
   update-homebrew-formula:
     name: Update Homebrew Formula
-    needs: [create-release, build-release]
+    needs: [bump-and-tag, build-release]
+    if: needs.bump-and-tag.outputs.released == 'true'
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout main (not tag — we push back to main)
+      - name: Checkout main
         uses: actions/checkout@v4
         with:
           ref: main
@@ -181,8 +216,8 @@ jobs:
         id: sha256
         env:
           REPO: ${{ github.repository }}
-          VERSION: ${{ needs.create-release.outputs.version }}
-          TAG: ${{ needs.create-release.outputs.tag }}
+          VERSION: ${{ needs.bump-and-tag.outputs.version }}
+          TAG: ${{ needs.bump-and-tag.outputs.tag }}
         run: |
           aarch64_url="https://github.com/$REPO/releases/download/$TAG/oversee-$VERSION-aarch64-apple-darwin.tar.gz"
           aarch64_sha256=$(curl -sL "$aarch64_url" | sha256sum | cut -d' ' -f1)
@@ -198,8 +233,8 @@ jobs:
       - name: Generate Homebrew Formula
         env:
           REPO: ${{ github.repository }}
-          VERSION: ${{ needs.create-release.outputs.version }}
-          TAG: ${{ needs.create-release.outputs.tag }}
+          VERSION: ${{ needs.bump-and-tag.outputs.version }}
+          TAG: ${{ needs.bump-and-tag.outputs.tag }}
           AARCH64_SHA: ${{ steps.sha256.outputs.aarch64_sha256 }}
           X86_SHA: ${{ steps.sha256.outputs.x86_sha256 }}
         run: |
@@ -235,7 +270,7 @@ jobs:
 
       - name: Commit and push formula update
         env:
-          VERSION: ${{ needs.create-release.outputs.version }}
+          VERSION: ${{ needs.bump-and-tag.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -248,9 +283,8 @@ jobs:
 
           git commit -m "Update oversee formula to $VERSION"
 
-          # main may have advanced (release-plz PR merge sits above the
-          # release commit the tag points at). Retry pull --rebase to handle
-          # concurrent updates without wedging the job.
+          # main may have advanced since checkout. Retry pull --rebase to
+          # handle concurrent updates without wedging the job.
           for attempt in 1 2 3; do
             if git push origin HEAD:main; then
               echo "Push succeeded on attempt $attempt"
@@ -264,13 +298,14 @@ jobs:
 
   publish-crates:
     name: Publish to crates.io
-    needs: [create-release, build-release]
+    needs: [bump-and-tag, build-release]
+    if: needs.bump-and-tag.outputs.released == 'true'
     runs-on: macos-latest
     steps:
-      - name: Checkout repository at tag
+      - name: Checkout at tag
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.tag || github.ref_name }}
+          ref: ${{ needs.bump-and-tag.outputs.tag }}
 
       - name: Install Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v1
