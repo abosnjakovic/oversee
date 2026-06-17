@@ -215,10 +215,10 @@ fn format_ports(ports: &[PortInfo]) -> String {
         _ => a.port.cmp(&b.port),
     });
 
-    // Take first 3 ports to fit in column
-    let displayed_ports: Vec<String> = sorted_ports
+    // Collapse duplicate connections sharing a local port (e.g. a busy
+    // listener with many established sockets all on 443).
+    let mut labels: Vec<String> = sorted_ports
         .iter()
-        .take(3)
         .map(|port| {
             match port.state {
                 ConnectionState::Listen => format!("{}L", port.port), // L for listening
@@ -226,9 +226,11 @@ fn format_ports(ports: &[PortInfo]) -> String {
             }
         })
         .collect();
+    labels.dedup();
 
-    let mut result = displayed_ports.join(",");
-    if ports.len() > 3 {
+    // Take first 3 unique ports to fit in column
+    let mut result = labels.iter().take(3).cloned().collect::<Vec<_>>().join(",");
+    if labels.len() > 3 {
         result.push_str("...");
     }
 
@@ -1675,6 +1677,40 @@ mod tests {
                 println!("Mock GPU cores: 0 (would indicate no GPU)");
             }
         }
+    }
+
+    #[test]
+    fn test_format_ports_collapses_duplicate_local_ports() {
+        use crate::process::Protocol;
+
+        let mk = |port, state| PortInfo {
+            port,
+            protocol: Protocol::Tcp,
+            state,
+            local_address: None,
+            remote_address: None,
+        };
+
+        // A busy listener: one LISTEN socket plus many established connections
+        // all sharing local port 443. The column must not read "443,443,443".
+        let ports = vec![
+            mk(443, ConnectionState::Listen),
+            mk(443, ConnectionState::Established),
+            mk(443, ConnectionState::Established),
+            mk(443, ConnectionState::Established),
+        ];
+        // 443L (listening) and 443 (established) are distinct, but the repeated
+        // established sockets collapse to a single entry.
+        assert_eq!(format_ports(&ports), "443L,443");
+
+        // Distinct ports are preserved and overflow past three is marked.
+        let many = vec![
+            mk(80, ConnectionState::Established),
+            mk(81, ConnectionState::Established),
+            mk(82, ConnectionState::Established),
+            mk(83, ConnectionState::Established),
+        ];
+        assert_eq!(format_ports(&many), "80,81,82...");
     }
 
     // Helper functions for tests
