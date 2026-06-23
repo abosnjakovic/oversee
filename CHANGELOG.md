@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.5](https://github.com/abosnjakovic/oversee/compare/v0.3.4...v0.3.5) - 2026-06-23
+
+### Other
+
+- Move per-core CPU/GPU into horizontal header lines ([#11](https://github.com/abosnjakovic/oversee/pull/11))
+- Update oversee formula to 0.3.4
+
 ## [0.3.4](https://github.com/abosnjakovic/oversee/compare/v0.3.3...v0.3.4) - 2026-06-17
 
 ### Fixed
