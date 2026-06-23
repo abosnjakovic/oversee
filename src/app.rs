@@ -415,10 +415,6 @@ impl App {
         }
     }
 
-    pub fn get_cpu_count(&self) -> usize {
-        self.cpu_core_histories.len()
-    }
-
     /// Returns current CPU usage for each core (last recorded value)
     pub fn get_cpu_usages(&self) -> Vec<(String, f32)> {
         self.cpu_core_histories

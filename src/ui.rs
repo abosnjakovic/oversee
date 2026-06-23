@@ -254,13 +254,16 @@ pub fn render(f: &mut Frame, app: &mut App) {
         height: size.height.saturating_sub(2),
     };
 
-    // Main layout: KPI header, separator, timeline, spacing, memory, separator, process list
+    // Main layout: KPI header, per-core CPU/GPU lines, separator, timeline,
+    // spacing, memory, separator, process list
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),  // KPI header strip
+            Constraint::Length(1),  // Per-core CPU line
+            Constraint::Length(1),  // Per-core GPU line
             Constraint::Length(1),  // Separator under header
-            Constraint::Length(22), // Timeline graph
+            Constraint::Length(22), // Timeline graph (full width)
             Constraint::Length(1),  // Spacing
             Constraint::Length(1),  // Memory stats (1 line)
             Constraint::Length(1),  // Separator above process list
@@ -271,21 +274,21 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // Render the KPI header across the full width
     render_kpi_header(f, app, main_chunks[0]);
 
+    // Per-core CPU/GPU usage as two full-width horizontal lines under the header
+    render_cpu_cores_line(f, app, main_chunks[1]);
+    if app.is_gpu_visible() {
+        render_gpu_cores_line(f, app, main_chunks[2]);
+    }
+
     // Thin separator line under header
-    render_separator(f, main_chunks[1]);
+    render_separator(f, main_chunks[3]);
 
-    // Split timeline area: graph on left, cores panel on right
-    let timeline_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(80), Constraint::Percentage(20)])
-        .split(main_chunks[2]);
+    // Timeline now spans the full width (cores moved out of the right panel)
+    render_chart_timeline(f, app, main_chunks[4]);
 
-    render_chart_timeline(f, app, timeline_chunks[0]);
-    render_cores_panel(f, app, timeline_chunks[1]);
-
-    render_memory_section(f, app, main_chunks[4]);
-    render_separator(f, main_chunks[5]);
-    render_process_list(f, app, main_chunks[6]);
+    render_memory_section(f, app, main_chunks[6]);
+    render_separator(f, main_chunks[7]);
+    render_process_list(f, app, main_chunks[8]);
 
     // Render kill confirmation dialog if active
     if app.kill_confirmation_mode {
@@ -631,88 +634,47 @@ fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
     );
 }
 
-fn render_cores_panel(f: &mut Frame, app: &App, area: Rect) {
-    // No title — caller already provides the KPI header above the timeline.
-    let cores_area = area;
-
-    // Split cores area horizontally: CPU cores left, GPU cores right
-    let split_chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50), // CPU cores left half
-            Constraint::Percentage(50), // GPU cores right half
-        ])
-        .split(cores_area);
-
-    // Render CPU cores in left half
-    render_cpu_cores_panel(f, app, split_chunks[0]);
-
-    // Render GPU cores in right half if visible
-    if app.is_gpu_visible() {
-        render_gpu_cores_panel(f, app, split_chunks[1]);
-    }
-}
-
-fn render_cpu_cores_panel(f: &mut Frame, app: &App, area: Rect) {
-    let cpu_count = app.get_cpu_count();
-    let available_height = area.height as usize;
-
-    if cpu_count == 0 || available_height == 0 {
+/// Build a single full-width line of per-core usage cells in tight
+/// `label:percent` form (e.g. `cpu C0:10% C1:7% …`). Percentages are
+/// colour-graded by load; the line clips on narrow terminals (no wrap).
+fn render_cores_line(
+    f: &mut Frame,
+    area: Rect,
+    lead: &str,
+    prefix: char,
+    usages: &[(String, f32)],
+) {
+    if area.width == 0 || area.height == 0 || usages.is_empty() {
         return;
     }
 
-    // Each core gets 1 line
-    let cores_to_show = available_height.min(cpu_count);
-    let mut constraints = Vec::new();
-    for _ in 0..cores_to_show {
-        constraints.push(Constraint::Length(1));
+    let mut spans: Vec<Span> = Vec::with_capacity(usages.len() * 2 + 1);
+    spans.push(Span::styled(
+        format!("{} ", lead),
+        Style::default().fg(THEME.fg_dim),
+    ));
+
+    for (i, (_name, usage)) in usages.iter().enumerate() {
+        spans.push(Span::styled(
+            format!("{}{}:", prefix, i),
+            Style::default().fg(THEME.fg_dim),
+        ));
+        spans.push(Span::styled(
+            format!("{:.0}% ", usage),
+            Style::default().fg(get_gradient_color(*usage)),
+        ));
     }
 
-    let core_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(area);
-
-    // Render CPU cores with dot visualization
-    let cpu_usages = app.get_cpu_usages();
-    for (i, (_cpu_name, usage)) in cpu_usages.iter().enumerate() {
-        if i >= core_chunks.len() {
-            break;
-        }
-
-        render_core_dot_line(f, core_chunks[i], &format!("CPU {}", i), *usage, THEME.cpu);
-    }
+    let line = Paragraph::new(Line::from(spans));
+    f.render_widget(line, area);
 }
 
-fn render_gpu_cores_panel(f: &mut Frame, app: &App, area: Rect) {
-    let gpu_usages = app.get_gpu_usages();
-    let gpu_count = gpu_usages.len();
-    let available_height = area.height as usize;
+fn render_cpu_cores_line(f: &mut Frame, app: &App, area: Rect) {
+    render_cores_line(f, area, "cpu", 'C', &app.get_cpu_usages());
+}
 
-    if gpu_count == 0 || available_height == 0 {
-        return;
-    }
-
-    // Each core gets 1 line
-    let cores_to_show = available_height.min(gpu_count);
-    let mut constraints = Vec::new();
-    for _ in 0..cores_to_show {
-        constraints.push(Constraint::Length(1));
-    }
-
-    let core_chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints(constraints)
-        .split(area);
-
-    // Render GPU cores with dot visualization
-    for (i, (_gpu_name, usage)) in gpu_usages.iter().enumerate() {
-        if i >= core_chunks.len() {
-            break;
-        }
-
-        render_core_dot_line(f, core_chunks[i], &format!("GPU {}", i), *usage, THEME.gpu);
-    }
+fn render_gpu_cores_line(f: &mut Frame, app: &App, area: Rect) {
+    render_cores_line(f, area, "gpu", 'G', &app.get_gpu_usages());
 }
 
 /// Interpolate between data points to create denser visualization
@@ -1168,52 +1130,6 @@ fn get_gradient_color(usage: f32) -> Color {
     } else {
         THEME.fg_dim
     }
-}
-
-fn render_core_dot_line(
-    f: &mut Frame,
-    area: Rect,
-    name: &str,
-    usage: f32,
-    base_color: Color, // Use the provided color for text (cyan for CPU, magenta for GPU)
-) {
-    // Block characters for vertical bar display (like btop++)
-    const BLOCKS: [&str; 9] = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
-
-    // Calculate which block to use based on usage
-    let block_idx = ((usage / 100.0) * 8.0).round() as usize;
-    let block = BLOCKS[block_idx.min(8)];
-
-    // Get gradient color for the bar based on usage
-    let bar_color = get_gradient_color(usage);
-
-    // Format name (ensure consistent alignment)
-    let short_name = if name.starts_with("CPU") {
-        let num = name.replace("CPU ", "");
-        format!("C{:>2}", num)
-    } else if name.starts_with("GPU") {
-        let num = name.replace("GPU ", "");
-        format!("G{:>2}", num)
-    } else {
-        name.to_string()
-    };
-
-    // Create properly aligned text: "C 0: █  45%"
-    let name_span = ratatui::text::Span::styled(
-        format!("{:<3}:", short_name),
-        Style::default().fg(base_color),
-    );
-
-    let bar_span =
-        ratatui::text::Span::styled(format!(" {}", block), Style::default().fg(bar_color));
-
-    let percent_span =
-        ratatui::text::Span::styled(format!(" {:>3.0}%", usage), Style::default().fg(base_color));
-
-    let line = ratatui::text::Line::from(vec![name_span, bar_span, percent_span]);
-    let paragraph = Paragraph::new(line).wrap(Wrap { trim: false });
-
-    f.render_widget(paragraph, area);
 }
 
 fn render_memory_section(f: &mut Frame, app: &App, area: Rect) {
