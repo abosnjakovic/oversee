@@ -62,7 +62,7 @@ pub const THEME: Theme = Theme {
 
     grid: Color::Rgb(50, 50, 60),
     separator: Color::DarkGray,
-    cursor: Color::White,
+    cursor: Color::Rgb(90, 90, 100),
 };
 
 /// Map a column position to a trail tier.
