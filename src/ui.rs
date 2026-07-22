@@ -1,4 +1,4 @@
-use crate::app::App;
+use crate::app::{App, TimelineView};
 use crate::process::{ConnectionState, PortInfo, ProcessDetails, ProcessInfo, SortMode};
 use crate::theme::{THEME, TRAIL_TIERS, trail_tier};
 use ratatui::{
@@ -533,6 +533,16 @@ fn render_kpi_header(f: &mut Frame, app: &App, area: Rect) {
     let label = Style::default().fg(THEME.fg_dim);
     let bullet = Span::styled(" · ", Style::default().fg(THEME.fg_faint));
 
+    // Bold the metric the timeline is currently graphing (toggled with Tab).
+    let active = app.timeline_view;
+    let metric_label = |view: TimelineView| {
+        if active == view {
+            Style::default().fg(THEME.fg).add_modifier(Modifier::BOLD)
+        } else {
+            label
+        }
+    };
+
     let load = current_load_one();
     let cpu_avg = app
         .get_cpu_average_history()
@@ -574,19 +584,19 @@ fn render_kpi_header(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(THEME.fg),
     ));
     spans.push(bullet.clone());
-    spans.push(Span::styled("cpu ", label));
+    spans.push(Span::styled("cpu ", metric_label(TimelineView::Cpu)));
     spans.push(Span::styled(
         format!("{:>3.0}%", cpu_avg),
         Style::default().fg(THEME.cpu),
     ));
     spans.push(bullet.clone());
-    spans.push(Span::styled("gpu ", label));
+    spans.push(Span::styled("gpu ", metric_label(TimelineView::Gpu)));
     spans.push(Span::styled(
         format!("{:>3.0}%", gpu_avg),
         Style::default().fg(THEME.gpu),
     ));
     spans.push(bullet.clone());
-    spans.push(Span::styled("mem ", label));
+    spans.push(Span::styled("mem ", metric_label(TimelineView::Memory)));
     spans.push(Span::styled(
         format!("{:>3.0}%", mem_pct),
         Style::default().fg(mem_color),
@@ -610,28 +620,124 @@ fn render_kpi_header(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
-    // Use the entire area for the graph; KPI header lives in its own row above.
-    let inner = area;
+    let offset = app.get_timeline_offset();
 
-    // Use cached CPU average data (computed in update_cpu_data)
-    let cpu_history: Vec<f32> = app.get_cpu_average_history().iter().copied().collect();
+    // Build the set of waveforms for the selected metric. Overview overlays the
+    // three aggregate signals (the classic view). CPU/GPU show every core as its
+    // own colour-coded trace; memory shows a single usage trace tinted by the
+    // pressure level recorded at each point in time.
+    let waves: Vec<Wave> = match app.timeline_view {
+        TimelineView::Overview => {
+            let mut waves = vec![Wave {
+                data: app.get_cpu_average_history().iter().copied().collect(),
+                palettes: vec![THEME.cpu_trail],
+            }];
+            if app.is_gpu_visible() {
+                waves.push(Wave {
+                    data: app.gpu_overall_history.iter().copied().collect(),
+                    palettes: vec![THEME.gpu_trail],
+                });
+            }
+            waves.push(Wave {
+                data: app.memory_usage_history.iter().copied().collect(),
+                palettes: vec![THEME.mem_trail],
+            });
+            waves
+        }
+        TimelineView::Cpu => app
+            .cpu_core_histories
+            .iter()
+            .enumerate()
+            .map(|(i, h)| Wave {
+                data: h.iter().copied().collect(),
+                palettes: vec![core_palette(i)],
+            })
+            .collect(),
+        TimelineView::Gpu => app
+            .gpu_core_histories
+            .iter()
+            .enumerate()
+            .map(|(i, h)| Wave {
+                data: h.iter().copied().collect(),
+                palettes: vec![core_palette(i)],
+            })
+            .collect(),
+        TimelineView::Memory => {
+            vec![Wave {
+                data: app.memory_usage_history.iter().copied().collect(),
+                palettes: pressure_col_palettes(app, area.width as usize, offset),
+            }]
+        }
+    };
 
-    // Get GPU history
-    let gpu_history: Vec<f32> = app.gpu_overall_history.iter().copied().collect();
+    render_waves(f, area, &waves, offset);
+}
 
-    // Get memory history
-    let memory_history: Vec<f32> = app.memory_usage_history.iter().copied().collect();
+/// Distinct base hues cycled across cores so individual traces stay
+/// distinguishable when overlaid. Chosen for contrast on a dark terminal.
+const CORE_HUES: [(u8, u8, u8); 12] = [
+    (0, 200, 220),   // cyan
+    (240, 160, 40),  // orange
+    (120, 220, 90),  // green
+    (220, 100, 210), // magenta
+    (240, 220, 70),  // yellow
+    (100, 150, 250), // blue
+    (250, 110, 90),  // salmon
+    (150, 230, 210), // teal
+    (200, 140, 250), // violet
+    (185, 210, 60),  // lime
+    (250, 150, 200), // pink
+    (110, 205, 170), // seafoam
+];
 
-    // Render oscilloscope-style timeline
-    render_oscilloscope_timeline(
-        f,
-        inner,
-        &cpu_history,
-        &gpu_history,
-        &memory_history,
-        app.is_gpu_visible(),
-        app.get_timeline_offset(),
-    );
+/// A phosphor-fade trail palette for core `i`, derived from its base hue by
+/// scaling brightness across the trail tiers.
+fn core_palette(i: usize) -> [Color; TRAIL_TIERS] {
+    let (r, g, b) = CORE_HUES[i % CORE_HUES.len()];
+    let shade = |f: f32| {
+        Color::Rgb(
+            (r as f32 * f) as u8,
+            (g as f32 * f) as u8,
+            (b as f32 * f) as u8,
+        )
+    };
+    [shade(1.0), shade(0.68), shade(0.44), shade(0.28)]
+}
+
+/// Build a per-character-column trail palette for the memory waveform,
+/// coloured by the memory pressure level at each column. The pressure signal
+/// is pushed through the same slice/interpolate/display pipeline as the usage
+/// signal so the two stay column-aligned by construction.
+fn pressure_col_palettes(
+    app: &App,
+    char_width: usize,
+    timeline_offset: usize,
+) -> Vec<[ratatui::style::Color; TRAIL_TIERS]> {
+    use crate::memory::MemoryPressure;
+
+    const DISPLAY_DURATION: usize = 300;
+    let nums: Vec<f32> = app
+        .memory_pressure_history
+        .iter()
+        .map(|p| match p {
+            MemoryPressure::Green => 0.0,
+            MemoryPressure::Yellow => 1.0,
+            MemoryPressure::Red => 2.0,
+        })
+        .collect();
+
+    let points = get_history_slice(&nums, timeline_offset + DISPLAY_DURATION, timeline_offset);
+    let dense = interpolate_data(points, 4);
+    let display_points = (char_width * 2).min(dense.len());
+    let display = get_display_slice(&dense, display_points);
+
+    (0..char_width)
+        .map(|c| match display.get(c * 2).copied().unwrap_or(0.0).round() as i32 {
+            n if n >= 2 => THEME.mem_crit_trail,
+            1 => THEME.mem_warn_trail,
+            _ => THEME.mem_trail,
+        })
+        .collect()
 }
 
 /// Build a single full-width line of per-core usage cells in tight
@@ -655,9 +761,11 @@ fn render_cores_line(
     ));
 
     for (i, (_name, usage)) in usages.iter().enumerate() {
+        // Colour the core label with its timeline hue so this line doubles as
+        // the legend for the per-core CPU/GPU timeline views.
         spans.push(Span::styled(
             format!("{}{}:", prefix, i),
-            Style::default().fg(THEME.fg_dim),
+            Style::default().fg(core_palette(i)[0]),
         ));
         spans.push(Span::styled(
             format!("{:.0}% ", usage),
@@ -709,81 +817,59 @@ fn interpolate_data(data: &[f32], factor: usize) -> Vec<f32> {
     interpolated
 }
 
-/// Cell colour type for the rendering buffer
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum CellColor {
-    None,
-    Cpu,
-    Gpu,
-    Memory,
+/// One waveform to plot on the timeline: its full history plus a trail
+/// palette. `palettes` is either a single uniform palette (`len == 1`) or one
+/// palette per character column (used to tint the memory wave by pressure).
+struct Wave {
+    data: Vec<f32>,
+    palettes: Vec<[ratatui::style::Color; TRAIL_TIERS]>,
 }
 
-/// Render oscilloscope-style timeline with waveform visualization
-/// Uses a buffered approach to batch character rendering and reduce widget allocations
-fn render_oscilloscope_timeline(
-    f: &mut Frame,
-    area: Rect,
-    cpu_history: &[f32],
-    gpu_history: &[f32],
-    memory_history: &[f32],
-    show_gpu: bool,
-    timeline_offset: usize,
-) {
+/// Render an oscilloscope-style timeline for an arbitrary set of waves. Each
+/// wave becomes its own braille trace; later waves draw over earlier ones on
+/// overlap. Uses a buffered per-row approach to batch character rendering.
+fn render_waves(f: &mut Frame, area: Rect, waves: &[Wave], timeline_offset: usize) {
     use ratatui::text::{Line, Span};
 
     let available_width = area.width as usize;
     let available_height = area.height as usize;
 
-    if available_width == 0 || available_height == 0 {
+    if available_width == 0 || available_height == 0 || waves.is_empty() {
         return;
     }
 
     // Always display 300 seconds, but offset by timeline_offset
     const DISPLAY_DURATION: usize = 300;
-
-    // Calculate the range we want to display
     let end_offset = timeline_offset;
     let start_offset = end_offset + DISPLAY_DURATION;
-
-    // Get data slices accounting for offset
-    let cpu_points = get_history_slice(cpu_history, start_offset, end_offset);
-    let gpu_points = get_history_slice(gpu_history, start_offset, end_offset);
-    let memory_points = get_history_slice(memory_history, start_offset, end_offset);
-
-    // Apply interpolation for denser visualization (4x density)
-    let interpolation_factor = 4;
-    let cpu_dense = interpolate_data(cpu_points, interpolation_factor);
-    let gpu_dense = interpolate_data(gpu_points, interpolation_factor);
-    let memory_dense = interpolate_data(memory_points, interpolation_factor);
-
-    // Limit display width to available screen space
-    // Each character cell has 2 braille columns, so we need 2 data points per character
-    let display_points = (available_width * 2).min(cpu_dense.len());
-    let cpu_display = get_display_slice(&cpu_dense, display_points);
-    let gpu_display = get_display_slice(&gpu_dense, display_points);
-    let memory_display = get_display_slice(&memory_dense, display_points);
 
     let char_width = available_width;
     let char_height = available_height;
     let dot_height = char_height * 4;
 
-    // Create buffers for characters and colours - one row at a time rendering
-    // Buffer stores (braille_bits, color) for each character cell
-    let mut row_buffer: Vec<(u32, CellColor)> = vec![(0, CellColor::None); char_width];
+    // Slice, interpolate (4x density) and trim each wave to the visible window.
+    let displays: Vec<Vec<f32>> = waves
+        .iter()
+        .map(|w| {
+            let points = get_history_slice(&w.data, start_offset, end_offset);
+            let dense = interpolate_data(points, 4);
+            let display_points = (available_width * 2).min(dense.len());
+            get_display_slice(&dense, display_points).to_vec()
+        })
+        .collect();
+    let display_points = displays.iter().map(|d| d.len()).max().unwrap_or(0);
 
-    // Track previous positions for line connections
-    let mut prev_cpu_row: Option<usize> = None;
-    let mut prev_gpu_row: Option<usize> = None;
-    let mut prev_memory_row: Option<usize> = None;
+    // Buffer stores (braille_bits, winning wave index) per character cell.
+    // `None` marks an empty cell so vertical lines only claim unowned cells.
+    let mut row_buffer: Vec<(u32, Option<usize>)> = vec![(0, None); char_width];
+    // Previous character row per wave, for vertical line connections.
+    let mut prev_rows: Vec<Option<usize>> = vec![None; waves.len()];
 
-    // Process each row from top to bottom
     for row_idx in 0..char_height {
-        // Clear the row buffer
         for cell in row_buffer.iter_mut() {
-            *cell = (0, CellColor::None);
+            *cell = (0, None);
         }
 
-        // Process each data point
         for col in 0..display_points {
             let char_col = col / 2;
             let braille_col = col % 2;
@@ -792,121 +878,37 @@ fn render_oscilloscope_timeline(
                 continue;
             }
 
-            // Get usage values
-            let cpu_usage = cpu_display
-                .get(col)
-                .copied()
-                .unwrap_or(0.0)
-                .clamp(0.0, 100.0);
-            let gpu_usage = if show_gpu {
-                gpu_display
-                    .get(col)
-                    .copied()
-                    .unwrap_or(0.0)
-                    .clamp(0.0, 100.0)
-            } else {
-                0.0
-            };
-            let memory_usage = memory_display
-                .get(col)
-                .copied()
-                .unwrap_or(0.0)
-                .clamp(0.0, 100.0);
+            for (wi, display) in displays.iter().enumerate() {
+                let usage = display.get(col).copied().unwrap_or(0.0).clamp(0.0, 100.0);
+                let dot_row = ((usage / 100.0) * (dot_height - 1) as f32).round() as usize;
+                let cell_row = char_height.saturating_sub(1 + dot_row / 4);
+                let sub_row = 3 - (dot_row % 4);
 
-            // Convert to dot rows
-            let cpu_dot_row = ((cpu_usage / 100.0) * (dot_height - 1) as f32).round() as usize;
-            let gpu_dot_row = ((gpu_usage / 100.0) * (dot_height - 1) as f32).round() as usize;
-            let memory_dot_row =
-                ((memory_usage / 100.0) * (dot_height - 1) as f32).round() as usize;
+                if cell_row == row_idx {
+                    row_buffer[char_col].0 |= get_braille_bits(braille_col, sub_row);
+                    row_buffer[char_col].1 = Some(wi);
+                }
 
-            // Convert to character row and sub-row
-            let cpu_char_row = char_height.saturating_sub(1 + cpu_dot_row / 4);
-            let gpu_char_row = char_height.saturating_sub(1 + gpu_dot_row / 4);
-            let memory_char_row = char_height.saturating_sub(1 + memory_dot_row / 4);
-
-            let cpu_sub_row = 3 - (cpu_dot_row % 4);
-            let gpu_sub_row = 3 - (gpu_dot_row % 4);
-            let memory_sub_row = 3 - (memory_dot_row % 4);
-
-            // Check if this row contains CPU data
-            if cpu_char_row == row_idx {
-                let bits = get_braille_bits(braille_col, cpu_sub_row);
-                row_buffer[char_col].0 |= bits;
-                row_buffer[char_col].1 = CellColor::Cpu;
-            }
-
-            // Check if this row contains GPU data (GPU overwrites CPU if overlapping)
-            if show_gpu && gpu_char_row == row_idx {
-                let bits = get_braille_bits(braille_col, gpu_sub_row);
-                row_buffer[char_col].0 |= bits;
-                row_buffer[char_col].1 = CellColor::Gpu;
-            }
-
-            // Check if this row contains memory data (Memory overwrites others if overlapping)
-            if memory_char_row == row_idx {
-                let bits = get_braille_bits(braille_col, memory_sub_row);
-                row_buffer[char_col].0 |= bits;
-                row_buffer[char_col].1 = CellColor::Memory;
-            }
-
-            // Handle vertical line connections for CPU
-            if let Some(prev_row) = prev_cpu_row
-                && prev_row != cpu_char_row
-            {
-                let (start, end) = if prev_row < cpu_char_row {
-                    (prev_row, cpu_char_row)
-                } else {
-                    (cpu_char_row, prev_row)
-                };
-                // Fill vertical line if this row is between start and end
-                if row_idx > start && row_idx < end {
-                    row_buffer[char_col].0 |= get_vertical_line_bits(braille_col);
-                    if row_buffer[char_col].1 == CellColor::None {
-                        row_buffer[char_col].1 = CellColor::Cpu;
+                // Vertical line connecting this column's dot to the previous one.
+                if let Some(prev_row) = prev_rows[wi]
+                    && prev_row != cell_row
+                {
+                    let (start, end) = if prev_row < cell_row {
+                        (prev_row, cell_row)
+                    } else {
+                        (cell_row, prev_row)
+                    };
+                    if row_idx > start && row_idx < end {
+                        row_buffer[char_col].0 |= get_vertical_line_bits(braille_col);
+                        if row_buffer[char_col].1.is_none() {
+                            row_buffer[char_col].1 = Some(wi);
+                        }
                     }
                 }
-            }
 
-            // Handle vertical line connections for GPU
-            if show_gpu
-                && let Some(prev_row) = prev_gpu_row
-                && prev_row != gpu_char_row
-            {
-                let (start, end) = if prev_row < gpu_char_row {
-                    (prev_row, gpu_char_row)
-                } else {
-                    (gpu_char_row, prev_row)
-                };
-                if row_idx > start && row_idx < end {
-                    row_buffer[char_col].0 |= get_vertical_line_bits(braille_col);
-                    if row_buffer[char_col].1 == CellColor::None {
-                        row_buffer[char_col].1 = CellColor::Gpu;
-                    }
+                if braille_col == 1 {
+                    prev_rows[wi] = Some(cell_row);
                 }
-            }
-
-            // Handle vertical line connections for memory
-            if let Some(prev_row) = prev_memory_row
-                && prev_row != memory_char_row
-            {
-                let (start, end) = if prev_row < memory_char_row {
-                    (prev_row, memory_char_row)
-                } else {
-                    (memory_char_row, prev_row)
-                };
-                if row_idx > start && row_idx < end {
-                    row_buffer[char_col].0 |= get_vertical_line_bits(braille_col);
-                    if row_buffer[char_col].1 == CellColor::None {
-                        row_buffer[char_col].1 = CellColor::Memory;
-                    }
-                }
-            }
-
-            // Update previous row tracking at the end of each character (braille_col == 1)
-            if braille_col == 1 {
-                prev_cpu_row = Some(cpu_char_row);
-                prev_gpu_row = Some(gpu_char_row);
-                prev_memory_row = Some(memory_char_row);
             }
         }
 
@@ -928,18 +930,13 @@ fn render_oscilloscope_timeline(
         let mut current_style = Style::default();
         let mut have_run = false;
 
-        for (col, (bits, color)) in row_buffer.iter().enumerate() {
+        for (col, (bits, wave_idx)) in row_buffer.iter().enumerate() {
             let (ch, style) = if *bits != 0 {
                 let braille = std::char::from_u32(0x2800 + bits).unwrap_or(' ');
-                let tier = trail_tier(col, char_width);
-                let palette = match color {
-                    CellColor::Cpu => &THEME.cpu_trail,
-                    CellColor::Gpu => &THEME.gpu_trail,
-                    CellColor::Memory => &THEME.mem_trail,
-                    CellColor::None => &THEME.cpu_trail,
-                };
-                let idx = tier.min(TRAIL_TIERS - 1);
-                (braille, Style::default().fg(palette[idx]))
+                let tier = trail_tier(col, char_width).min(TRAIL_TIERS - 1);
+                let palettes = &waves[wave_idx.unwrap_or(0)].palettes;
+                let palette = &palettes[col.min(palettes.len() - 1)];
+                (braille, Style::default().fg(palette[tier]))
             } else if cursor_col == Some(col) {
                 ('│', Style::default().fg(THEME.cursor))
             } else {
@@ -986,18 +983,6 @@ fn render_oscilloscope_timeline(
             },
         );
     }
-
-    // Render signal labels on the left side of the graph
-    render_signal_labels(
-        f,
-        area,
-        cpu_display,
-        gpu_display,
-        memory_display,
-        show_gpu,
-        dot_height,
-        char_height,
-    );
 }
 
 /// Helper to get braille bit value for a position
@@ -1044,76 +1029,6 @@ fn get_display_slice(data: &[f32], display_points: usize) -> &[f32] {
         &data[data.len() - display_points..]
     } else {
         data
-    }
-}
-
-/// Render signal labels (C, G, M) at their average positions
-#[allow(clippy::too_many_arguments)]
-fn render_signal_labels(
-    f: &mut Frame,
-    area: Rect,
-    cpu_display: &[f32],
-    gpu_display: &[f32],
-    memory_display: &[f32],
-    show_gpu: bool,
-    dot_height: usize,
-    char_height: usize,
-) {
-    if !cpu_display.is_empty() {
-        let cpu_avg = cpu_display.iter().sum::<f32>() / cpu_display.len() as f32;
-        let cpu_avg_dot_row = ((cpu_avg / 100.0) * (dot_height - 1) as f32).round() as usize;
-        let cpu_avg_char_row = char_height.saturating_sub(1 + cpu_avg_dot_row / 4);
-        let cpu_label_y = area.y + cpu_avg_char_row as u16;
-
-        let cpu_label =
-            Paragraph::new("C").style(Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD));
-        f.render_widget(
-            cpu_label,
-            Rect {
-                x: area.x,
-                y: cpu_label_y,
-                width: 1,
-                height: 1,
-            },
-        );
-    }
-
-    if show_gpu && !gpu_display.is_empty() {
-        let gpu_avg = gpu_display.iter().sum::<f32>() / gpu_display.len() as f32;
-        let gpu_avg_dot_row = ((gpu_avg / 100.0) * (dot_height - 1) as f32).round() as usize;
-        let gpu_avg_char_row = char_height.saturating_sub(1 + gpu_avg_dot_row / 4);
-        let gpu_label_y = area.y + gpu_avg_char_row as u16;
-
-        let gpu_label =
-            Paragraph::new("G").style(Style::default().fg(THEME.gpu).add_modifier(Modifier::BOLD));
-        f.render_widget(
-            gpu_label,
-            Rect {
-                x: area.x,
-                y: gpu_label_y,
-                width: 1,
-                height: 1,
-            },
-        );
-    }
-
-    if !memory_display.is_empty() {
-        let memory_avg = memory_display.iter().sum::<f32>() / memory_display.len() as f32;
-        let memory_avg_dot_row = ((memory_avg / 100.0) * (dot_height - 1) as f32).round() as usize;
-        let memory_avg_char_row = char_height.saturating_sub(1 + memory_avg_dot_row / 4);
-        let memory_label_y = area.y + memory_avg_char_row as u16;
-
-        let memory_label =
-            Paragraph::new("M").style(Style::default().fg(THEME.mem).add_modifier(Modifier::BOLD));
-        f.render_widget(
-            memory_label,
-            Rect {
-                x: area.x,
-                y: memory_label_y,
-                width: 1,
-                height: 1,
-            },
-        );
     }
 }
 
@@ -1318,6 +1233,7 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from("  Enter         Pin/Unpin process (shows full command)"),
         Line::from("  s             Cycle through sort modes"),
         Line::from("  v             Toggle GPU visibility"),
+        Line::from("  Tab or t      Cycle timeline (overview / CPU / GPU / memory)"),
         Line::from("  K             Kill selected process (with confirmation)"),
         Line::from("  /             Enter filter mode"),
         Line::from("  +/=           Scroll timeline forward (newer data)"),

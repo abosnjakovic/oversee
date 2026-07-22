@@ -16,6 +16,9 @@ pub struct Theme {
     pub cpu_trail: [Color; TRAIL_TIERS],
     pub gpu_trail: [Color; TRAIL_TIERS],
     pub mem_trail: [Color; TRAIL_TIERS],
+    /// Memory trail tinted for Warning / Critical pressure states.
+    pub mem_warn_trail: [Color; TRAIL_TIERS],
+    pub mem_crit_trail: [Color; TRAIL_TIERS],
 
     pub accent_warn: Color,
     pub accent_crit: Color,
@@ -51,6 +54,18 @@ pub const THEME: Theme = Theme {
         Color::Rgb(80, 180, 100),
         Color::Rgb(45, 110, 60),
         Color::Rgb(30, 70, 40),
+    ],
+    mem_warn_trail: [
+        Color::Rgb(230, 200, 70),
+        Color::Rgb(180, 155, 55),
+        Color::Rgb(120, 105, 35),
+        Color::Rgb(80, 70, 25),
+    ],
+    mem_crit_trail: [
+        Color::Rgb(240, 80, 80),
+        Color::Rgb(200, 70, 70),
+        Color::Rgb(130, 45, 45),
+        Color::Rgb(85, 30, 30),
     ],
 
     accent_warn: Color::Yellow,

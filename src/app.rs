@@ -1,5 +1,5 @@
 use crate::gpu::GpuMonitor;
-use crate::memory::MemoryInfo;
+use crate::memory::{MemoryInfo, MemoryPressure};
 use crate::process::{ProcessDetails, ProcessInfo, SortMode, fetch_process_details};
 use crate::{DataCommand, DataUpdate};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
@@ -11,6 +11,27 @@ use std::time::{Duration, Instant};
 
 const MAX_TIMELINE_OFFSET: usize = 900; // Allow scrolling back 15 minutes
 
+/// Which metric the main timeline graph is showing.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum TimelineView {
+    /// Combined CPU average + GPU overall + memory usage (the default).
+    Overview,
+    Cpu,
+    Gpu,
+    Memory,
+}
+
+impl TimelineView {
+    fn next(self) -> Self {
+        match self {
+            TimelineView::Overview => TimelineView::Cpu,
+            TimelineView::Cpu => TimelineView::Gpu,
+            TimelineView::Gpu => TimelineView::Memory,
+            TimelineView::Memory => TimelineView::Overview,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct App {
     // Data from background thread
@@ -18,6 +39,7 @@ pub struct App {
     pub gpu_core_histories: Vec<VecDeque<f32>>,
     pub gpu_overall_history: VecDeque<f32>,
     pub memory_usage_history: VecDeque<f32>,
+    pub memory_pressure_history: VecDeque<MemoryPressure>,
     cpu_average_history: VecDeque<f32>,
     processes: Vec<ProcessInfo>,
 
@@ -26,6 +48,7 @@ pub struct App {
     pub memory_info: Option<MemoryInfo>, // Updated from background thread
 
     // UI state
+    pub timeline_view: TimelineView,
     pub gpu_visible: bool,
     pub selected_process: usize,
     pub table_state: TableState,
@@ -78,12 +101,14 @@ impl App {
             gpu_core_histories: (0..gpu_core_count).map(|_| VecDeque::new()).collect(),
             gpu_overall_history: VecDeque::new(),
             memory_usage_history: VecDeque::new(),
+            memory_pressure_history: VecDeque::new(),
             cpu_average_history: VecDeque::new(),
             processes: Vec::new(),
 
             gpu_monitor,
             memory_info: None,
 
+            timeline_view: TimelineView::Overview,
             gpu_visible: true,
             selected_process: 0,
             table_state,
@@ -178,6 +203,10 @@ impl App {
                     self.memory_usage_history.push_back(usage_value);
                     if self.memory_usage_history.len() > MAX_HISTORY {
                         self.memory_usage_history.pop_front();
+                    }
+                    self.memory_pressure_history.push_back(info.pressure);
+                    if self.memory_pressure_history.len() > MAX_HISTORY {
+                        self.memory_pressure_history.pop_front();
                     }
                     self.memory_info = Some(info);
                     updated = true;
@@ -355,6 +384,9 @@ impl App {
                 let _ = self
                     .command_tx
                     .send(DataCommand::SetGpuActive(self.gpu_visible));
+            }
+            KeyCode::Tab | KeyCode::Char('t') => {
+                self.timeline_view = self.timeline_view.next();
             }
             KeyCode::Char('K') => {
                 let processes = self.get_filtered_processes();
