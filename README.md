@@ -1,17 +1,36 @@
 A modern system monitor for macOS, inspired by htop and btop++, built in Rust with a focus on Apple Silicon performance monitoring.
 Why? I wanted to view cpu AND gpu cores. I wanted memory pressure and not just used/swap due to how macs work differently here.
 
-<img width="1056" height="1575" alt="image" src="https://github.com/user-attachments/assets/ca4f4249-a659-4d46-a1d1-73ae376fde2c" />
-
+![oversee overview](assets/overview.png)
 
 ## Features
 
 - **Process Management**: Detailed process list with CPU, GPU, memory usage, and user information
 - **GPU Monitoring**: Real-time GPU utilisation via powermetrics (requires sudo)
-- **Timeline Visualization**: Smooth braille character graphs showing system activity over time
+- **Timeline Visualisation**: Smooth braille character graphs showing system activity over time
+- **Toggleable Timeline**: Press `Tab` to cycle the graph between an overview, per-core CPU, per-core GPU, and memory usage/pressure
 - **Memory Pressure**: Green/Yellow/Red pressure indicators matching Activity Monitor
 - **Smart Filtering**: Press `/` to filter processes by name, port or user (vim-style)
 - **Vim-style controls**: `j/k` for navigation, `g/G` for top/bottom, `/` for search
+
+### Timeline Views
+
+`Tab` (or `t`) cycles the main graph through four metrics:
+
+- **Overview** (default): CPU average, GPU overall, and memory usage overlaid — the classic combined view.
+- **CPU**: every core as its own colour-coded trace. The per-core labels in the header share the same colours, so the header doubles as a legend.
+- **GPU**: every GPU core, same treatment (needs sudo for real data).
+- **Memory**: usage over time, tinted green/yellow/red by the memory pressure recorded at each moment.
+
+![Per-core CPU timeline](assets/cpu.png)
+
+![Memory usage tinted by pressure](assets/memory.png)
+
+![Cycling through the timeline views](assets/demo.gif)
+
+`+`/`-` scroll the graph back through up to 15 minutes of history.
+
+> Screenshots are generated from [`assets/oversee.tape`](assets/oversee.tape) with [vhs](https://github.com/charmbracelet/vhs): `vhs assets/oversee.tape`.
 
 ### Memory Pressure Algorithm
 Uses macOS's native memory pressure reporting via `kern.memorystatus_vm_pressure_level`:
@@ -61,7 +80,7 @@ brew install abosnjakovic/oversee
 
 ### Build from Source
 ```bash
-git clone https://github.com/your-username/oversee.git
+git clone https://github.com/abosnjakovic/oversee.git
 cd oversee
 cargo build --release
 ./target/release/oversee
@@ -87,14 +106,19 @@ Without sudo, GPU metrics will show 0% (requires access to powermetrics).
 - `Space`: Pause/Resume monitoring
 - `q` or `ESC`: Quit
 - `j/k` or `↑↓`: Navigate process list
+- `g/G`: Jump to top/bottom of process list
+- `Page Up/Down`, `Home/End`: Navigate by 10 / to first or last
+- `Enter`: Pin/unpin the selected process (shows its full command)
 - `s`: Cycle through sort modes
 - `v`: Toggle GPU visibility
-- `+/-`: Adjust timeline scope
-- `g/G`: Jump to top/bottom of process list
+- `Tab` or `t`: Cycle the timeline metric (overview / CPU / GPU / memory)
+- `+/-`: Scroll the timeline through history (back up to 15 minutes)
+- `K`: Kill the selected process (with confirmation)
+- `?`: Toggle the help popup
 
 ### Filtering Processes
 1. Press `/` to enter filter mode
-2. Type to filter by process name or username
+2. Type to filter by process name, port, or username
 3. `Enter` to apply filter, `ESC` to cancel
 4. Navigation works within filtered results
 
@@ -107,10 +131,11 @@ src/
 ├── app.rs           # Main application state and event handling
 ├── ui.rs            # Terminal UI rendering and layout
 ├── cpu.rs           # CPU monitoring and history tracking
-├── gpu.rs           # Apple Silicon GPU monitoring  
+├── gpu.rs           # Apple Silicon GPU monitoring
 ├── memory.rs        # Memory pressure calculation and monitoring
 ├── process.rs       # Process enumeration with user resolution
-└── tui.rs           # Terminal initialization and cleanup
+├── theme.rs         # Central colour palette (including per-core hues)
+└── tui.rs           # Terminal initialisation and cleanup
 ```
 
 ## Contributing
