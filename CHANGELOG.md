@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.7](https://github.com/abosnjakovic/oversee/compare/v0.3.6...v0.3.7) - 2026-08-08
+
+### Fixed
+
+- stop fabricating per-core GPU utilisation
+
+### Other
+
+- Update oversee formula to 0.3.6
+
 ## [0.3.6](https://github.com/abosnjakovic/oversee/compare/v0.3.5...v0.3.6) - 2026-08-08
 
 ### Added
