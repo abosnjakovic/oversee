@@ -5,7 +5,7 @@ Why? I wanted to view cpu AND gpu cores. I wanted memory pressure and not just u
 
 ## Features
 
-- **Process Management**: Detailed process list with CPU, GPU, memory usage, and user information
+- **Process Management**: Detailed process list with CPU, memory usage, ports, and user information
 - **GPU Monitoring**: Real-time GPU utilisation via powermetrics (requires sudo)
 - **Timeline Visualisation**: Smooth braille character graphs showing system activity over time
 - **Toggleable Timeline**: Press `Tab` to cycle the graph between an overview, per-core CPU, per-core GPU, and memory usage/pressure
@@ -42,6 +42,8 @@ This matches Activity Monitor's behavior exactly, as both use the same kernel me
 
 ### GPU Monitoring
 GPU utilisation is obtained via macOS `powermetrics` which requires root access. Run oversee with `sudo` for accurate GPU metrics. Without sudo, GPU shows 0%.
+
+This is a **system-wide** figure. macOS exposes no per-process GPU accounting through `sysinfo`, so the `GPU%` column in the process list shows `—` rather than a guess.
 
 ### Understanding macOS Memory Management
 

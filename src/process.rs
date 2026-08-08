@@ -54,7 +54,11 @@ pub struct ProcessInfo {
     pub cmd: String,
     pub user: String,
     pub cpu_usage: f32,
-    pub gpu_usage: f32,
+    /// Per-process GPU utilisation. `None` means no data source is available —
+    /// macOS exposes no per-process GPU accounting through sysinfo, and the
+    /// `gpu_power` sampler only reports system-wide residency. Never fake this
+    /// with a heuristic; the UI renders `None` as a dash, not as 0%.
+    pub gpu_usage: Option<f32>,
     pub memory: u64,
     pub ports: Vec<PortInfo>,
     pub cwd: Option<String>,
@@ -317,20 +321,6 @@ impl ProcessMonitor {
         }
     }
 
-    /// Heuristic GPU usage estimate from process name + CPU. Kept private so the
-    /// cheap cpu-only refresh path and the full rebuild path stay in sync.
-    fn estimate_gpu_usage(name: &str, cpu: f32) -> f32 {
-        if name.contains("Renderer") || name.contains("GPU") {
-            (cpu * 0.3).min(5.0)
-        } else if name.contains("WindowServer") || name.contains("loginwindow") {
-            2.0 + (cpu * 0.2).min(3.0)
-        } else if name.contains("VTDecoder") || name.contains("VideoToolbox") {
-            10.0 + (cpu * 0.5).min(20.0)
-        } else {
-            0.0
-        }
-    }
-
     /// Refresh process information.
     /// - `include_ports`: Whether to run lsof to get port information (expensive)
     /// - `full_refresh`: If true, refresh memory/user/cmd info; if false, only refresh CPU usage
@@ -395,8 +385,6 @@ impl ProcessMonitor {
                 // build below so they get a complete record.
                 if !full_refresh && let Some(mut existing) = prev.remove(&process_pid) {
                     existing.cpu_usage = process.cpu_usage();
-                    existing.gpu_usage =
-                        Self::estimate_gpu_usage(&existing.name, existing.cpu_usage);
                     return existing;
                 }
 
@@ -440,8 +428,6 @@ impl ProcessMonitor {
                     "unknown".to_string()
                 };
 
-                let gpu_usage = Self::estimate_gpu_usage(&name, process.cpu_usage());
-
                 let ports = port_map.get(&process_pid).cloned().unwrap_or_default();
 
                 let cwd = process.cwd().map(|p| p.to_string_lossy().into_owned());
@@ -455,7 +441,7 @@ impl ProcessMonitor {
                     cmd,
                     user,
                     cpu_usage: process.cpu_usage(),
-                    gpu_usage,
+                    gpu_usage: None,
                     memory: process.memory(),
                     ports,
                     cwd,
