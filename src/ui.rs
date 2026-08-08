@@ -383,14 +383,14 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
                 proc.pid.to_string()
             };
 
-            // Per-metric coloured numeric cells, dimmed when value is negligible.
-            let metric_cell = |value: f32, color: Color, width: usize| -> Cell {
-                let style = if value < 1.0 {
-                    Style::default().fg(THEME.fg_faint)
-                } else {
-                    Style::default().fg(color)
+            // Per-metric coloured numeric cells, dimmed when value is negligible
+            // or unavailable.
+            let metric_cell = |value: Option<f32>, color: Color, width: usize| -> Cell {
+                let style = match value {
+                    Some(v) if v >= 1.0 => Style::default().fg(color),
+                    _ => Style::default().fg(THEME.fg_faint),
                 };
-                Cell::from(Span::styled(format!("{:>1$.1}", value, width), style))
+                Cell::from(Span::styled(format_metric(value, width), style))
             };
             let mem_cell = {
                 let style = if mem_mb < 1.0 {
@@ -416,7 +416,7 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
                 Row::new(vec![
                     pid_cell,
                     Cell::from(truncate_string(&proc.user, 8)),
-                    metric_cell(proc.cpu_usage, THEME.cpu, 6),
+                    metric_cell(Some(proc.cpu_usage), THEME.cpu, 6),
                     metric_cell(proc.gpu_usage, THEME.gpu, 6),
                     Cell::from(format_ports(&proc.ports)),
                     mem_cell,
@@ -428,7 +428,7 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
                 Row::new(vec![
                     pid_cell,
                     Cell::from(truncate_string(&proc.user, 8)),
-                    metric_cell(proc.cpu_usage, THEME.cpu, 6),
+                    metric_cell(Some(proc.cpu_usage), THEME.cpu, 6),
                     metric_cell(proc.gpu_usage, THEME.gpu, 6),
                     Cell::from(format_ports(&proc.ports)),
                     mem_cell,
@@ -1346,6 +1346,16 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
     f.render_widget(paragraph, popup_area);
 }
 
+/// Right-align a metric in `width` columns. `None` means the metric has no data
+/// source and renders as an em dash — never as `0.0`, which would be
+/// indistinguishable from a genuine zero reading.
+fn format_metric(value: Option<f32>, width: usize) -> String {
+    match value {
+        Some(v) => format!("{:>1$.1}", v, width),
+        None => format!("{:>1$}", "—", width),
+    }
+}
+
 fn truncate_string(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
         s.to_string()
@@ -1357,6 +1367,26 @@ fn truncate_string(s: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_unavailable_metric_is_not_rendered_as_zero() {
+        // A missing data source must be visually distinct from a real 0.0
+        // reading. Regression guard against reintroducing a fabricated value
+        // (e.g. estimating per-process GPU from the process name).
+        let unavailable = format_metric(None, 6);
+        assert_eq!(unavailable, "     —");
+        assert_ne!(unavailable.trim(), "0.0");
+
+        // Real readings still format as before.
+        assert_eq!(format_metric(Some(0.0), 6), "   0.0");
+        assert_eq!(format_metric(Some(12.34), 6), "  12.3");
+
+        // Both branches occupy the same number of terminal columns, so the
+        // table stays aligned. Note: chars(), not len() — the em dash is 3 bytes.
+        for value in [None, Some(0.0), Some(100.0)] {
+            assert_eq!(format_metric(value, 6).chars().count(), 6, "{:?}", value);
+        }
+    }
 
     #[test]
     fn test_dot_pattern_generation() {
