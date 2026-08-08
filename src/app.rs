@@ -36,7 +36,6 @@ impl TimelineView {
 pub struct App {
     // Data from background thread
     pub cpu_core_histories: Vec<VecDeque<f32>>,
-    pub gpu_core_histories: Vec<VecDeque<f32>>,
     pub gpu_overall_history: VecDeque<f32>,
     pub memory_usage_history: VecDeque<f32>,
     pub memory_pressure_history: VecDeque<MemoryPressure>,
@@ -79,7 +78,6 @@ pub struct App {
 impl App {
     pub fn new(command_tx: Sender<DataCommand>) -> Self {
         let gpu_monitor = GpuMonitor::new();
-        let gpu_core_count = gpu_monitor.get_core_count();
 
         let mut table_state = TableState::default();
         table_state.select(Some(0));
@@ -98,7 +96,6 @@ impl App {
         App {
             // Data will be populated from background thread
             cpu_core_histories: Vec::new(),
-            gpu_core_histories: (0..gpu_core_count).map(|_| VecDeque::new()).collect(),
             gpu_overall_history: VecDeque::new(),
             memory_usage_history: VecDeque::new(),
             memory_pressure_history: VecDeque::new(),
@@ -172,27 +169,7 @@ impl App {
                     }
                     updated = true;
                 }
-                DataUpdate::Gpu {
-                    core_values,
-                    overall_value,
-                } => {
-                    // Initialise history vectors if needed
-                    if self.gpu_core_histories.len() != core_values.len() {
-                        self.gpu_core_histories = (0..core_values.len())
-                            .map(|_| VecDeque::with_capacity(MAX_HISTORY))
-                            .collect();
-                    }
-
-                    // Append new values to histories
-                    for (i, &value) in core_values.iter().enumerate() {
-                        if i < self.gpu_core_histories.len() {
-                            self.gpu_core_histories[i].push_back(value);
-                            if self.gpu_core_histories[i].len() > MAX_HISTORY {
-                                self.gpu_core_histories[i].pop_front();
-                            }
-                        }
-                    }
-
+                DataUpdate::Gpu { overall_value } => {
                     self.gpu_overall_history.push_back(overall_value);
                     if self.gpu_overall_history.len() > MAX_HISTORY {
                         self.gpu_overall_history.pop_front();
@@ -455,18 +432,6 @@ impl App {
             .map(|(i, history)| {
                 let usage = history.back().copied().unwrap_or(0.0);
                 (format!("CPU {}", i), usage)
-            })
-            .collect()
-    }
-
-    /// Returns current GPU usage for each core (last recorded value)
-    pub fn get_gpu_usages(&self) -> Vec<(String, f32)> {
-        self.gpu_core_histories
-            .iter()
-            .enumerate()
-            .map(|(i, history)| {
-                let usage = history.back().copied().unwrap_or(0.0);
-                (format!("GPU {}", i), usage)
             })
             .collect()
     }

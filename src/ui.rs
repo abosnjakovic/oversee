@@ -254,14 +254,13 @@ pub fn render(f: &mut Frame, app: &mut App) {
         height: size.height.saturating_sub(2),
     };
 
-    // Main layout: KPI header, per-core CPU/GPU lines, separator, timeline,
+    // Main layout: KPI header, per-core CPU line, separator, timeline,
     // spacing, memory, separator, process list
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),  // KPI header strip
             Constraint::Length(1),  // Per-core CPU line
-            Constraint::Length(1),  // Per-core GPU line
             Constraint::Length(1),  // Separator under header
             Constraint::Length(22), // Timeline graph (full width)
             Constraint::Length(1),  // Spacing
@@ -274,21 +273,18 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // Render the KPI header across the full width
     render_kpi_header(f, app, main_chunks[0]);
 
-    // Per-core CPU/GPU usage as two full-width horizontal lines under the header
+    // Per-core CPU usage as a full-width horizontal line under the header
     render_cpu_cores_line(f, app, main_chunks[1]);
-    if app.is_gpu_visible() {
-        render_gpu_cores_line(f, app, main_chunks[2]);
-    }
 
     // Thin separator line under header
-    render_separator(f, main_chunks[3]);
+    render_separator(f, main_chunks[2]);
 
     // Timeline now spans the full width (cores moved out of the right panel)
-    render_chart_timeline(f, app, main_chunks[4]);
+    render_chart_timeline(f, app, main_chunks[3]);
 
-    render_memory_section(f, app, main_chunks[6]);
-    render_separator(f, main_chunks[7]);
-    render_process_list(f, app, main_chunks[8]);
+    render_memory_section(f, app, main_chunks[5]);
+    render_separator(f, main_chunks[6]);
+    render_process_list(f, app, main_chunks[7]);
 
     // Render kill confirmation dialog if active
     if app.kill_confirmation_mode {
@@ -623,9 +619,10 @@ fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
     let offset = app.get_timeline_offset();
 
     // Build the set of waveforms for the selected metric. Overview overlays the
-    // three aggregate signals (the classic view). CPU/GPU show every core as its
-    // own colour-coded trace; memory shows a single usage trace tinted by the
-    // pressure level recorded at each point in time.
+    // three aggregate signals (the classic view). CPU shows every core as its
+    // own colour-coded trace; GPU shows the single system-wide trace; memory
+    // shows a usage trace tinted by the pressure level recorded at each point
+    // in time.
     let waves: Vec<Wave> = match app.timeline_view {
         TimelineView::Overview => {
             let mut waves = vec![Wave {
@@ -653,15 +650,12 @@ fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
                 palettes: vec![core_palette(i)],
             })
             .collect(),
-        TimelineView::Gpu => app
-            .gpu_core_histories
-            .iter()
-            .enumerate()
-            .map(|(i, h)| Wave {
-                data: h.iter().copied().collect(),
-                palettes: vec![core_palette(i)],
-            })
-            .collect(),
+        // System-wide only: macOS reports no per-core GPU breakdown, so this is
+        // the same signal as the overview's GPU trace, isolated on its own scale.
+        TimelineView::Gpu => vec![Wave {
+            data: app.gpu_overall_history.iter().copied().collect(),
+            palettes: vec![THEME.gpu_trail],
+        }],
         TimelineView::Memory => {
             vec![Wave {
                 data: app.memory_usage_history.iter().copied().collect(),
@@ -742,31 +736,26 @@ fn pressure_col_palettes(
         .collect()
 }
 
-/// Build a single full-width line of per-core usage cells in tight
+/// Build a single full-width line of per-core CPU usage cells in tight
 /// `label:percent` form (e.g. `cpu C0:10% C1:7% …`). Percentages are
 /// colour-graded by load; the line clips on narrow terminals (no wrap).
-fn render_cores_line(
-    f: &mut Frame,
-    area: Rect,
-    lead: &str,
-    prefix: char,
-    usages: &[(String, f32)],
-) {
+///
+/// There is no GPU counterpart: macOS exposes no per-core GPU utilisation, and
+/// the system-wide figure is already in the KPI header.
+fn render_cpu_cores_line(f: &mut Frame, app: &App, area: Rect) {
+    let usages = app.get_cpu_usages();
     if area.width == 0 || area.height == 0 || usages.is_empty() {
         return;
     }
 
     let mut spans: Vec<Span> = Vec::with_capacity(usages.len() * 2 + 1);
-    spans.push(Span::styled(
-        format!("{} ", lead),
-        Style::default().fg(THEME.fg_dim),
-    ));
+    spans.push(Span::styled("cpu ", Style::default().fg(THEME.fg_dim)));
 
     for (i, (_name, usage)) in usages.iter().enumerate() {
         // Colour the core label with its timeline hue so this line doubles as
-        // the legend for the per-core CPU/GPU timeline views.
+        // the legend for the per-core CPU timeline view.
         spans.push(Span::styled(
-            format!("{}{}:", prefix, i),
+            format!("C{}:", i),
             Style::default().fg(core_palette(i)[0]),
         ));
         spans.push(Span::styled(
@@ -777,14 +766,6 @@ fn render_cores_line(
 
     let line = Paragraph::new(Line::from(spans));
     f.render_widget(line, area);
-}
-
-fn render_cpu_cores_line(f: &mut Frame, app: &App, area: Rect) {
-    render_cores_line(f, area, "cpu", 'C', &app.get_cpu_usages());
-}
-
-fn render_gpu_cores_line(f: &mut Frame, app: &App, area: Rect) {
-    render_cores_line(f, area, "gpu", 'G', &app.get_gpu_usages());
 }
 
 /// Interpolate between data points to create denser visualization
@@ -1496,51 +1477,6 @@ mod tests {
         // Test height calculation
         let panel_height = test_area.height.saturating_sub(2);
         assert_eq!(panel_height, 28);
-    }
-
-    #[test]
-    fn test_cores_to_show_calculation() {
-        let available_height = 25;
-        let total_cores = 34; // 14 CPU + 20 GPU
-        let lines_per_core = 1;
-
-        let cores_to_show = (available_height / lines_per_core).min(total_cores);
-        assert_eq!(cores_to_show, 25); // Should show 25 cores out of 34
-
-        // Test when we have fewer cores than available height
-        let few_cores = 10;
-        let cores_to_show_few = (available_height / lines_per_core).min(few_cores);
-        assert_eq!(cores_to_show_few, 10); // Should show all 10 cores
-    }
-
-    #[test]
-    fn test_gpu_detection_expectations() {
-        // Skip this test in CI environments where GPU detection might fail
-        // The test is meant to document expected behavior on actual hardware
-
-        // Instead of creating a real GPU monitor which might panic,
-        // just test the logic expectations
-        let mock_core_counts = vec![0, 8, 10, 16, 20, 32]; // Common GPU core counts
-
-        for core_count in mock_core_counts {
-            // Verify the count is reasonable (not impossibly high)
-            assert!(
-                core_count <= 40,
-                "GPU core count should be reasonable: {}",
-                core_count
-            );
-
-            // Document expected behavior: if cores > 0, GPU should be available
-            if core_count > 0 {
-                // This would be true for a real GPU monitor
-                println!(
-                    "Mock GPU cores: {} (would indicate available GPU)",
-                    core_count
-                );
-            } else {
-                println!("Mock GPU cores: 0 (would indicate no GPU)");
-            }
-        }
     }
 
     #[test]

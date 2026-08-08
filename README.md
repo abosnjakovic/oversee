@@ -8,7 +8,7 @@ Why? I wanted to view cpu AND gpu cores. I wanted memory pressure and not just u
 - **Process Management**: Detailed process list with CPU, memory usage, ports, and user information
 - **GPU Monitoring**: Real-time GPU utilisation via powermetrics (requires sudo)
 - **Timeline Visualisation**: Smooth braille character graphs showing system activity over time
-- **Toggleable Timeline**: Press `Tab` to cycle the graph between an overview, per-core CPU, per-core GPU, and memory usage/pressure
+- **Toggleable Timeline**: Press `Tab` to cycle the graph between an overview, per-core CPU, GPU, and memory usage/pressure
 - **Memory Pressure**: Green/Yellow/Red pressure indicators matching Activity Monitor
 - **Smart Filtering**: Press `/` to filter processes by name, port or user (vim-style)
 - **Vim-style controls**: `j/k` for navigation, `g/G` for top/bottom, `/` for search
@@ -19,7 +19,7 @@ Why? I wanted to view cpu AND gpu cores. I wanted memory pressure and not just u
 
 - **Overview** (default): CPU average, GPU overall, and memory usage overlaid — the classic combined view.
 - **CPU**: every core as its own colour-coded trace. The per-core labels in the header share the same colours, so the header doubles as a legend.
-- **GPU**: every GPU core, same treatment (needs sudo for real data).
+- **GPU**: system-wide GPU utilisation on its own scale (needs sudo for real data). There is no per-core breakdown — macOS doesn't publish one.
 - **Memory**: usage over time, tinted green/yellow/red by the memory pressure recorded at each moment.
 
 ![Per-core CPU timeline](assets/cpu.png)
@@ -43,7 +43,7 @@ This matches Activity Monitor's behavior exactly, as both use the same kernel me
 ### GPU Monitoring
 GPU utilisation is obtained via macOS `powermetrics` which requires root access. Run oversee with `sudo` for accurate GPU metrics. Without sudo, GPU shows 0%.
 
-This is a **system-wide** figure. macOS exposes no per-process GPU accounting through `sysinfo`, so the `GPU%` column in the process list shows `—` rather than a guess.
+The `gpu_power` sampler reports one **system-wide** figure: aggregate hardware active residency. macOS publishes no per-core or per-process GPU breakdown, so oversee shows neither. The `GPU%` column in the process list displays `—` rather than a guess.
 
 ### Understanding macOS Memory Management
 

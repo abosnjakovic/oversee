@@ -1,4 +1,3 @@
-use std::collections::VecDeque;
 #[cfg(feature = "profile")]
 use std::fs::OpenOptions;
 #[cfg(feature = "profile")]
@@ -19,38 +18,6 @@ fn log_timing(label: &str, duration_ms: u128) {
         .open("/tmp/oversee-profile.log")
     {
         let _ = writeln!(file, "{}: {}ms", label, duration_ms);
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct GpuCoreInfo {
-    pub utilization: f32, // 0-100%
-}
-
-#[derive(Debug, Clone)]
-pub struct GpuInfo {
-    pub cores: Vec<GpuCoreInfo>,
-    pub overall_utilization: f32, // 0-100%
-    #[allow(dead_code)] // Used for display/info purposes
-    pub core_count: usize,
-    #[allow(dead_code)] // Used for display/info purposes
-    pub chip_name: String,
-}
-
-impl Default for GpuCoreInfo {
-    fn default() -> Self {
-        GpuCoreInfo { utilization: 0.0 }
-    }
-}
-
-impl Default for GpuInfo {
-    fn default() -> Self {
-        GpuInfo {
-            cores: Vec::new(),
-            overall_utilization: 0.0,
-            core_count: 0,
-            chip_name: "Unknown".to_string(),
-        }
     }
 }
 
@@ -85,11 +52,7 @@ impl PowermetricsState {
 }
 
 pub struct GpuMonitor {
-    current_info: GpuInfo,
-    core_histories: Vec<VecDeque<f32>>,
     available: bool,
-    core_count: usize,
-    chip_name: String,
     /// Shared state with background thread
     state: Arc<PowermetricsState>,
     /// Handle to the background thread (for cleanup)
@@ -99,19 +62,6 @@ pub struct GpuMonitor {
 impl GpuMonitor {
     pub fn new() -> Self {
         let available = Self::is_apple_silicon();
-        let (chip_name, core_count) = Self::detect_gpu_cores();
-
-        let core_histories = (0..core_count)
-            .map(|_| VecDeque::with_capacity(300))
-            .collect();
-
-        let current_info = GpuInfo {
-            core_count,
-            chip_name: chip_name.clone(),
-            cores: (0..core_count).map(|_| GpuCoreInfo::default()).collect(),
-            ..Default::default()
-        };
-
         let state = Arc::new(PowermetricsState::new());
 
         // Spawn background thread for powermetrics polling if GPU is available
@@ -125,11 +75,7 @@ impl GpuMonitor {
         };
 
         GpuMonitor {
-            current_info,
-            core_histories,
             available,
-            core_count,
-            chip_name,
             state,
             _background_thread: background_thread,
         }
@@ -145,33 +91,14 @@ impl GpuMonitor {
         self.state.active.store(active, Ordering::Relaxed);
     }
 
-    pub fn refresh(&mut self) {
-        if !self.available {
-            return;
-        }
-
-        // Generate GPU info with per-core data (reads from shared state)
-        self.current_info = self.get_gpu_info();
-
-        // Add each core's data to history
-        for (i, core) in self.current_info.cores.iter().enumerate() {
-            if i < self.core_histories.len() {
-                self.core_histories[i].push_back(core.utilization);
-
-                // Keep only the last 300 points (5 minutes)
-                if self.core_histories[i].len() > 300 {
-                    self.core_histories[i].pop_front();
-                }
-            }
-        }
-    }
-
-    pub fn get_info(&self) -> &GpuInfo {
-        &self.current_info
-    }
-
-    pub fn get_core_count(&self) -> usize {
-        self.core_count
+    /// System-wide GPU utilisation, 0-100%. Updated by the background thread.
+    ///
+    /// This is the only GPU figure macOS makes available to us: the `gpu_power`
+    /// sampler reports aggregate hardware active residency, never per-core or
+    /// per-process breakdowns. Reads 0.0 until the first successful
+    /// `powermetrics` run, which requires root.
+    pub fn utilization(&self) -> f32 {
+        self.state.get_utilization()
     }
 
     /// Background loop that polls powermetrics every 5 seconds
@@ -215,94 +142,6 @@ impl GpuMonitor {
         #[cfg(not(target_os = "macos"))]
         {
             false
-        }
-    }
-
-    // Detect GPU core count based on Apple Silicon chip
-    fn detect_gpu_cores() -> (String, usize) {
-        #[cfg(target_os = "macos")]
-        {
-            use std::process::Command;
-
-            // Try to get chip name from system_profiler
-            if let Ok(output) = Command::new("system_profiler")
-                .arg("SPHardwareDataType")
-                .output()
-            {
-                let info = String::from_utf8_lossy(&output.stdout);
-
-                // Parse chip name and determine core count
-                if info.contains("Apple M1") {
-                    if info.contains("M1 Max") {
-                        return ("M1 Max".to_string(), 32);
-                    } else if info.contains("M1 Pro") {
-                        return ("M1 Pro".to_string(), 16);
-                    } else {
-                        return ("M1".to_string(), 8);
-                    }
-                } else if info.contains("Apple M2") {
-                    if info.contains("M2 Max") {
-                        return ("M2 Max".to_string(), 38);
-                    } else if info.contains("M2 Pro") {
-                        return ("M2 Pro".to_string(), 19);
-                    } else if info.contains("M2 Ultra") {
-                        return ("M2 Ultra".to_string(), 76);
-                    } else {
-                        return ("M2".to_string(), 10);
-                    }
-                } else if info.contains("Apple M3") {
-                    if info.contains("M3 Max") {
-                        return ("M3 Max".to_string(), 40);
-                    } else if info.contains("M3 Pro") {
-                        return ("M3 Pro".to_string(), 18);
-                    } else {
-                        return ("M3".to_string(), 10);
-                    }
-                } else if info.contains("Apple M4") {
-                    if info.contains("M4 Max") {
-                        return ("M4 Max".to_string(), 40);
-                    } else if info.contains("M4 Pro") {
-                        return ("M4 Pro".to_string(), 20);
-                    } else {
-                        return ("M4".to_string(), 10);
-                    }
-                }
-            }
-        }
-
-        // Fallback
-        ("Unknown".to_string(), 8)
-    }
-
-    // Get real GPU info from shared state (updated by background thread)
-    fn get_gpu_info(&self) -> GpuInfo {
-        // Read utilization from shared state (lock-free)
-        let overall_utilization = self.state.get_utilization();
-
-        // Generate per-core utilization based on overall
-        // Apple Silicon doesn't expose per-core GPU stats, so we estimate
-        let mut cores = Vec::with_capacity(self.core_count);
-        for i in 0..self.core_count {
-            // Distribute load across cores with some variation
-            // First half of cores (performance) get slightly more
-            let core_factor = if i < self.core_count / 2 {
-                1.0 + (i as f32 * 0.02) // Slight increase for first cores
-            } else {
-                0.9 - ((i - self.core_count / 2) as f32 * 0.02) // Slight decrease
-            };
-
-            let core_util = (overall_utilization * core_factor).clamp(0.0, 100.0);
-
-            cores.push(GpuCoreInfo {
-                utilization: core_util,
-            });
-        }
-
-        GpuInfo {
-            cores,
-            overall_utilization,
-            core_count: self.core_count,
-            chip_name: self.chip_name.clone(),
         }
     }
 
@@ -397,8 +236,6 @@ impl std::fmt::Debug for GpuMonitor {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("GpuMonitor")
             .field("available", &self.available)
-            .field("core_count", &self.core_count)
-            .field("chip_name", &self.chip_name)
             .finish_non_exhaustive()
     }
 }
@@ -407,5 +244,34 @@ impl Drop for GpuMonitor {
     fn drop(&mut self) {
         // Signal the background thread to stop
         self.state.should_stop.store(true, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_percentage_reads_the_value_before_the_percent_sign() {
+        // Real powermetrics gpu_power output, including the trailing frequency
+        // residency breakdown that also contains percentages.
+        assert_eq!(
+            GpuMonitor::extract_percentage(
+                "GPU HW active residency:  12.23% (444 MHz: 12% 612 MHz: 0%)"
+            ),
+            Some(12.23)
+        );
+
+        // Digits before the real figure must not be picked up.
+        assert_eq!(
+            GpuMonitor::extract_percentage("GPU 0 HW active residency: 5.23%"),
+            Some(5.23)
+        );
+
+        // No numeric value at all.
+        assert_eq!(
+            GpuMonitor::extract_percentage("GPU HW active residency:"),
+            None
+        );
     }
 }

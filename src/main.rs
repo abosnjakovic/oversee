@@ -17,11 +17,9 @@ pub enum DataUpdate {
         core_values: Vec<f32>, // Current value for each core
         average_value: f32,    // Current average across all cores
     },
-    /// Incremental GPU update - just the new values for this tick
-    Gpu {
-        core_values: Vec<f32>, // Current value for each core
-        overall_value: f32,    // Current overall utilisation
-    },
+    /// Incremental GPU update - just the new value for this tick.
+    /// System-wide only; macOS exposes no per-core GPU breakdown.
+    Gpu { overall_value: f32 },
     /// Incremental memory update - just the new value for this tick
     Memory {
         usage_value: f32, // Current memory usage percentage
@@ -133,7 +131,7 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
     use crate::process::ProcessMonitor;
 
     let mut cpu_monitor = CpuMonitor::new();
-    let mut gpu_monitor = GpuMonitor::new();
+    let gpu_monitor = GpuMonitor::new();
     let mut memory_monitor = MemoryMonitor::new();
     let mut process_monitor = ProcessMonitor::new();
 
@@ -169,10 +167,6 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                 // CPU
                 profile!("cpu_refresh", cpu_monitor.refresh());
                 let usages = cpu_monitor.cpu_usages();
-
-                // GPU
-                profile!("gpu_refresh", gpu_monitor.refresh());
-                let gpu_info = gpu_monitor.get_info();
 
                 // Memory
                 profile!("memory_refresh", memory_monitor.refresh());
@@ -217,10 +211,9 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                     average_value: cpu_avg,
                 });
 
-                // GPU: send current values
+                // GPU: send current system-wide utilisation
                 let _ = tx.send(DataUpdate::Gpu {
-                    core_values: gpu_info.cores.iter().map(|c| c.utilization).collect(),
-                    overall_value: gpu_info.overall_utilization,
+                    overall_value: gpu_monitor.utilization(),
                 });
 
                 // Memory: send current usage percentage
