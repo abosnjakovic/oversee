@@ -732,11 +732,13 @@ fn pressure_col_palettes(
     let display = get_display_slice(&dense, display_points);
 
     (0..char_width)
-        .map(|c| match display.get(c * 2).copied().unwrap_or(0.0).round() as i32 {
-            n if n >= 2 => THEME.mem_crit_trail,
-            1 => THEME.mem_warn_trail,
-            _ => THEME.mem_trail,
-        })
+        .map(
+            |c| match display.get(c * 2).copied().unwrap_or(0.0).round() as i32 {
+                n if n >= 2 => THEME.mem_crit_trail,
+                1 => THEME.mem_warn_trail,
+                _ => THEME.mem_trail,
+            },
+        )
         .collect()
 }
 
