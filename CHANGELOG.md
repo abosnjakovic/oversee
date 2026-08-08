@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.6](https://github.com/abosnjakovic/oversee/compare/v0.3.5...v0.3.6) - 2026-08-08
+
+### Added
+
+- *(ui)* toggle timeline between overview, per-core CPU/GPU and memory
+
+### Fixed
+
+- stop fabricating per-process GPU usage ([#12](https://github.com/abosnjakovic/oversee/pull/12))
+
+### Other
+
+- add timeline screenshots and refresh README
+- Update oversee formula to 0.3.5
+
 ## [0.3.5](https://github.com/abosnjakovic/oversee/compare/v0.3.4...v0.3.5) - 2026-06-23
 
 ### Other
