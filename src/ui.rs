@@ -479,9 +479,9 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
     } else if app.filter_mode {
         "type to filter · enter apply · esc cancel"
     } else if app.is_paused() {
-        "[paused] space resume · q quit · ↑↓ nav · enter pin · K kill · s sort · / filter · +/- time · g/G top/bot · ? help"
+        "[paused] space resume · q quit · ↑↓ nav · enter pin · K kill · s sort · / filter · g/G top/bot · ? help"
     } else {
-        "space pause · q quit · ↑↓ nav · enter pin · K kill · s sort · / filter · +/- time · g/G top/bot · ? help"
+        "space pause · q quit · ↑↓ nav · enter pin · K kill · s sort · / filter · g/G top/bot · ? help"
     };
 
     let help_style = if app.kill_confirmation_mode {
