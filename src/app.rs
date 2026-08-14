@@ -9,22 +9,6 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-/// Bar meter placement, toggled with `b`.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum BarLayout {
-    Horizontal,
-    Vertical,
-}
-
-impl BarLayout {
-    fn toggled(self) -> Self {
-        match self {
-            BarLayout::Horizontal => BarLayout::Vertical,
-            BarLayout::Vertical => BarLayout::Horizontal,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct App {
     // Data from background thread — latest values only, no history
@@ -38,7 +22,6 @@ pub struct App {
     pub memory_info: Option<MemoryInfo>, // Updated from background thread
 
     // UI state
-    pub bar_layout: BarLayout,
     /// CPU model name for the header (e.g. "Apple M4 Pro").
     pub cpu_brand: String,
     pub gpu_visible: bool,
@@ -104,7 +87,6 @@ impl App {
             gpu_monitor,
             memory_info: None,
 
-            bar_layout: BarLayout::Horizontal,
             cpu_brand,
             gpu_visible: true,
             selected_process: 0,
@@ -320,9 +302,6 @@ impl App {
             KeyCode::Char('s') => {
                 self.sort_mode = self.sort_mode.next();
                 let _ = self.command_tx.send(DataCommand::ChangeSortMode);
-            }
-            KeyCode::Char('b') => {
-                self.bar_layout = self.bar_layout.toggled();
             }
             KeyCode::Char('v') => {
                 self.gpu_visible = !self.gpu_visible;

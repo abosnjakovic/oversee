@@ -1,4 +1,4 @@
-use crate::app::{App, BarLayout};
+use crate::app::App;
 use crate::process::{ConnectionState, PortInfo, ProcessDetails, ProcessInfo, SortMode};
 use crate::theme::THEME;
 use ratatui::{
@@ -252,13 +252,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     // Main layout: KPI header, separator, bar meters, separator, process list
     let items_len = bar_items(app).len();
-    let bar_height: u16 = match app.bar_layout {
-        BarLayout::Horizontal => {
-            let cols = if margin_area.width >= 80 { 2 } else { 1 };
-            items_len.div_ceil(cols) as u16
-        }
-        BarLayout::Vertical => 10, // 8 bar rows + label row + value row
-    };
+    let cols = if margin_area.width >= 80 { 2 } else { 1 };
+    let bar_height = items_len.div_ceil(cols) as u16;
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -619,21 +614,13 @@ fn bar_items(app: &App) -> Vec<BarItem> {
     items
 }
 
-/// htop-style bar section in the current placement.
+/// htop-style bar section: 2-column grid (1 column on narrow terminals),
+/// filling column-first like htop. Row layout per bar: `LBL ━━━╸···  value`.
 fn render_bars(f: &mut Frame, app: &App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let items = bar_items(app);
-    match app.bar_layout {
-        BarLayout::Horizontal => render_bars_horizontal(f, &items, area),
-        BarLayout::Vertical => render_bars_vertical(f, &items, area),
-    }
-}
-
-/// 2-column grid (1 column on narrow terminals), filling column-first like
-/// htop. Row layout per bar: `LBL ━━━╸···  value`.
-fn render_bars_horizontal(f: &mut Frame, items: &[BarItem], area: Rect) {
+    let items = &bar_items(app);
     const VALUE_W: usize = 11; // fits "30.0/48.0G"
     const LABEL_W: usize = 4;
     let cols: usize = if area.width >= 80 { 2 } else { 1 };
@@ -673,74 +660,6 @@ fn render_bars_horizontal(f: &mut Frame, items: &[BarItem], area: Rect) {
     }
 }
 
-/// Equalizer: 8 rows of 2-char-wide eighth-block columns, then a label row
-/// and a value row. Clips trailing bars on narrow terminals.
-fn render_bars_vertical(f: &mut Frame, items: &[BarItem], area: Rect) {
-    const BAR_ROWS: usize = 8;
-    const CELL_W: usize = 4; // 2-char bar + 2 gap, aligning with labels below
-    let visible = ((area.width as usize) / CELL_W).min(items.len());
-    let bar_rows = (area.height as usize).saturating_sub(2).min(BAR_ROWS);
-    if bar_rows == 0 || visible == 0 {
-        return;
-    }
-    const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
-
-    // Bar rows, top-down: row r displays level index (bar_rows - 1 - r).
-    for r in 0..bar_rows {
-        let spans: Vec<Span> = items[..visible]
-            .iter()
-            .map(|item| {
-                let levels = vert_bar_levels(item.frac, bar_rows);
-                let ch = BLOCKS[levels[bar_rows - 1 - r] as usize];
-                Span::styled(format!("{}{}  ", ch, ch), Style::default().fg(item.color))
-            })
-            .collect();
-        f.render_widget(
-            Paragraph::new(Line::from(spans)),
-            Rect {
-                x: area.x,
-                y: area.y + r as u16,
-                width: area.width,
-                height: 1,
-            },
-        );
-    }
-
-    // Label row + value row (percent only).
-    let labels: Vec<Span> = items[..visible]
-        .iter()
-        .map(|i| {
-            Span::styled(
-                format!("{:<3} ", i.label),
-                Style::default().fg(THEME.fg_dim),
-            )
-        })
-        .collect();
-    let values: Vec<Span> = items[..visible]
-        .iter()
-        .map(|i| {
-            Span::styled(
-                format!("{:<3} ", format!("{:.0}", i.frac * 100.0)),
-                Style::default().fg(i.color),
-            )
-        })
-        .collect();
-    for (off, spans) in [(0u16, labels), (1u16, values)] {
-        let y = area.y + bar_rows as u16 + off;
-        if y < area.bottom() {
-            f.render_widget(
-                Paragraph::new(Line::from(spans)),
-                Rect {
-                    x: area.x,
-                    y,
-                    width: area.width,
-                    height: 1,
-                },
-            );
-        }
-    }
-}
-
 /// htop-style horizontal meter: `━` full cells, one `╸` half-step, `·` rest.
 /// Exactly `width` chars; `frac` is clamped to 0.0–1.0.
 fn hori_bar(frac: f32, width: usize) -> String {
@@ -753,15 +672,6 @@ fn hori_bar(frac: f32, width: usize) -> String {
         if half == 1 { "╸" } else { "" },
         "·".repeat(width - full - half)
     )
-}
-
-/// Vertical meter levels, bottom row first: each row 0 (blank) to 8 (full
-/// block), eighth-block resolution. `frac` is clamped to 0.0–1.0.
-fn vert_bar_levels(frac: f32, rows: usize) -> Vec<u8> {
-    let units = (frac.clamp(0.0, 1.0) * (rows * 8) as f32).round() as usize;
-    (0..rows)
-        .map(|r| (units.saturating_sub(r * 8)).min(8) as u8)
-        .collect()
 }
 
 fn get_gradient_color(usage: f32) -> Color {
@@ -901,7 +811,6 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from("  Space         Pause/Resume monitoring"),
         Line::from("  Enter         Pin/Unpin process (shows full command)"),
         Line::from("  s             Cycle through sort modes"),
-        Line::from("  b             Toggle bar placement (horizontal / vertical)"),
         Line::from("  v             Toggle GPU bar"),
         Line::from("  K             Kill selected process (with confirmation)"),
         Line::from("  /             Enter filter mode"),
@@ -1109,19 +1018,6 @@ mod tests {
         for frac in [0.0f32, 0.1, 0.5, 0.99, 1.0] {
             assert_eq!(hori_bar(frac, 18).chars().count(), 18, "{}", frac);
         }
-    }
-
-    #[test]
-    fn test_vert_bar_levels_eighth_blocks() {
-        assert_eq!(vert_bar_levels(0.0, 8), vec![0u8; 8]);
-        assert_eq!(vert_bar_levels(1.0, 8), vec![8u8; 8]);
-        // 0.5 × 64 units = 32 → bottom 4 rows full, top 4 blank.
-        assert_eq!(vert_bar_levels(0.5, 8), vec![8, 8, 8, 8, 0, 0, 0, 0]);
-        // 0.3 × 64 = 19.2 → 19 units: 2 full rows + one row at 3/8.
-        assert_eq!(vert_bar_levels(0.3, 8), vec![8, 8, 3, 0, 0, 0, 0, 0]);
-        // Clamped.
-        assert_eq!(vert_bar_levels(2.0, 4), vec![8u8; 4]);
-        assert_eq!(vert_bar_levels(-1.0, 4), vec![0u8; 4]);
     }
 
     #[test]
