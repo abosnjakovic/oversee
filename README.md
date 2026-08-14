@@ -7,28 +7,19 @@ Why? I wanted to view cpu AND gpu cores. I wanted memory pressure and not just u
 
 - **Process Management**: Detailed process list with CPU, memory usage, ports, and user information
 - **GPU Monitoring**: Real-time GPU utilisation via powermetrics (requires sudo)
-- **Timeline Visualisation**: Smooth braille character graphs showing system activity over time
-- **Toggleable Timeline**: Press `Tab` to cycle the graph between an overview, per-core CPU, GPU, and memory usage/pressure
-- **Memory Pressure**: Green/Yellow/Red pressure indicators matching Activity Monitor
+- **htop-style Bar Meters**: one bar per CPU core, plus GPU, memory, and swap — load-gradient coloured, in a responsive column grid
+- **Memory Pressure**: the MEM/SWP bars are coloured green/yellow/red to match Activity Monitor's pressure levels
 - **Smart Filtering**: Press `/` to filter processes by name, port or user (vim-style)
 - **Vim-style controls**: `j/k` for navigation, `g/G` for top/bottom, `/` for search
 
-### Timeline Views
+### Bar Meters
 
-`Tab` (or `t`) cycles the main graph through four metrics:
+Every CPU core gets its own meter, followed by the system-wide GPU figure and
+memory/swap. Bar colour tracks load (dim → yellow → orange → red); the MEM and
+SWP bars are coloured by memory pressure instead. Press `?` in the app for the
+full colour key.
 
-- **Overview** (default): CPU average, GPU overall, and memory usage overlaid — the classic combined view.
-- **CPU**: every core as its own colour-coded trace. The per-core labels in the header share the same colours, so the header doubles as a legend.
-- **GPU**: system-wide GPU utilisation on its own scale (needs sudo for real data). There is no per-core breakdown — macOS doesn't publish one.
-- **Memory**: usage over time, tinted green/yellow/red by the memory pressure recorded at each moment.
-
-![Per-core CPU timeline](assets/cpu.png)
-
-![Memory usage tinted by pressure](assets/memory.png)
-
-![Cycling through the timeline views](assets/demo.gif)
-
-`+`/`-` scroll the graph back through up to 15 minutes of history.
+![Filtering and the help popup](assets/demo.gif)
 
 > Screenshots are generated from [`assets/oversee.tape`](assets/oversee.tape) with [vhs](https://github.com/charmbracelet/vhs): `vhs assets/oversee.tape`.
 
@@ -112,9 +103,7 @@ Without sudo, GPU metrics will show 0% (requires access to powermetrics).
 - `Page Up/Down`, `Home/End`: Navigate by 10 / to first or last
 - `Enter`: Pin/unpin the selected process (shows its full command)
 - `s`: Cycle through sort modes
-- `v`: Toggle GPU visibility
-- `Tab` or `t`: Cycle the timeline metric (overview / CPU / GPU / memory)
-- `+/-`: Scroll the timeline through history (back up to 15 minutes)
+- `v`: Toggle the GPU bar
 - `K`: Kill the selected process (with confirmation)
 - `?`: Toggle the help popup
 
@@ -132,11 +121,11 @@ src/
 ├── main.rs          # Application entry point
 ├── app.rs           # Main application state and event handling
 ├── ui.rs            # Terminal UI rendering and layout
-├── cpu.rs           # CPU monitoring and history tracking
+├── cpu.rs           # CPU usage sampling
 ├── gpu.rs           # Apple Silicon GPU monitoring
 ├── memory.rs        # Memory pressure calculation and monitoring
 ├── process.rs       # Process enumeration with user resolution
-├── theme.rs         # Central colour palette (including per-core hues)
+├── theme.rs         # Central colour palette
 └── tui.rs           # Terminal initialisation and cleanup
 ```
 
