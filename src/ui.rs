@@ -1015,6 +1015,20 @@ fn get_display_slice(data: &[f32], display_points: usize) -> &[f32] {
     }
 }
 
+/// htop-style horizontal meter: `━` full cells, one `╸` half-step, `·` rest.
+/// Exactly `width` chars; `frac` is clamped to 0.0–1.0.
+fn hori_bar(frac: f32, width: usize) -> String {
+    let units = (frac.clamp(0.0, 1.0) * (width * 2) as f32).round() as usize;
+    let full = units / 2;
+    let half = units % 2;
+    format!(
+        "{}{}{}",
+        "━".repeat(full),
+        if half == 1 { "╸" } else { "" },
+        "·".repeat(width - full - half)
+    )
+}
+
 fn get_gradient_color(usage: f32) -> Color {
     // Smooth gradient from cool to warm as load climbs.
     if usage >= 90.0 {
@@ -1366,6 +1380,24 @@ mod tests {
         // table stays aligned. Note: chars(), not len() — the em dash is 3 bytes.
         for value in [None, Some(0.0), Some(100.0)] {
             assert_eq!(format_metric(value, 6).chars().count(), 6, "{:?}", value);
+        }
+    }
+
+    #[test]
+    fn test_hori_bar_half_step_resolution() {
+        assert_eq!(hori_bar(0.0, 18), "·".repeat(18));
+        assert_eq!(hori_bar(1.0, 18), "━".repeat(18));
+        // 0.43 × 36 half-units = 15.48 → 15 units = 7 full + 1 half + 10 empty
+        assert_eq!(
+            hori_bar(0.43, 18),
+            format!("{}╸{}", "━".repeat(7), "·".repeat(10))
+        );
+        // Clamps out-of-range input.
+        assert_eq!(hori_bar(1.7, 10), "━".repeat(10));
+        assert_eq!(hori_bar(-0.2, 10), "·".repeat(10));
+        // Always exactly `width` chars.
+        for frac in [0.0f32, 0.1, 0.5, 0.99, 1.0] {
+            assert_eq!(hori_bar(frac, 18).chars().count(), 18, "{}", frac);
         }
     }
 
