@@ -1,45 +1,36 @@
 use crate::gpu::GpuMonitor;
-use crate::memory::{MemoryInfo, MemoryPressure};
+use crate::memory::MemoryInfo;
 use crate::process::{ProcessDetails, ProcessInfo, SortMode, fetch_process_details};
 use crate::{DataCommand, DataUpdate};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
-use std::collections::{HashSet, VecDeque};
+use std::collections::HashSet;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-const MAX_TIMELINE_OFFSET: usize = 900; // Allow scrolling back 15 minutes
-
-/// Which metric the main timeline graph is showing.
+/// Bar meter placement, toggled with `b`.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum TimelineView {
-    /// Combined CPU average + GPU overall + memory usage (the default).
-    Overview,
-    Cpu,
-    Gpu,
-    Memory,
+pub enum BarLayout {
+    Horizontal,
+    Vertical,
 }
 
-impl TimelineView {
-    fn next(self) -> Self {
+impl BarLayout {
+    fn toggled(self) -> Self {
         match self {
-            TimelineView::Overview => TimelineView::Cpu,
-            TimelineView::Cpu => TimelineView::Gpu,
-            TimelineView::Gpu => TimelineView::Memory,
-            TimelineView::Memory => TimelineView::Overview,
+            BarLayout::Horizontal => BarLayout::Vertical,
+            BarLayout::Vertical => BarLayout::Horizontal,
         }
     }
 }
 
 #[derive(Debug)]
 pub struct App {
-    // Data from background thread
-    pub cpu_core_histories: Vec<VecDeque<f32>>,
-    pub gpu_overall_history: VecDeque<f32>,
-    pub memory_usage_history: VecDeque<f32>,
-    pub memory_pressure_history: VecDeque<MemoryPressure>,
-    cpu_average_history: VecDeque<f32>,
+    // Data from background thread — latest values only, no history
+    pub cpu_core_values: Vec<f32>,
+    pub cpu_average: f32,
+    pub gpu_value: f32,
     processes: Vec<ProcessInfo>,
 
     // Static info (doesn't change)
@@ -47,13 +38,14 @@ pub struct App {
     pub memory_info: Option<MemoryInfo>, // Updated from background thread
 
     // UI state
-    pub timeline_view: TimelineView,
+    pub bar_layout: BarLayout,
+    /// CPU model name for the header (e.g. "Apple M4 Pro").
+    pub cpu_brand: String,
     pub gpu_visible: bool,
     pub selected_process: usize,
     pub table_state: TableState,
     pub running: bool,
     pub paused: bool,
-    pub timeline_offset: usize,
     pub filter_mode: bool,
     pub filter_input: String,
     pub filtered_indices: Vec<usize>,
@@ -93,25 +85,32 @@ impl App {
             }
         });
 
+        let cpu_brand = std::process::Command::new("sysctl")
+            .args(["-n", "machdep.cpu.brand_string"])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8(o.stdout).ok())
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| "cpu".to_string());
+
         App {
             // Data will be populated from background thread
-            cpu_core_histories: Vec::new(),
-            gpu_overall_history: VecDeque::new(),
-            memory_usage_history: VecDeque::new(),
-            memory_pressure_history: VecDeque::new(),
-            cpu_average_history: VecDeque::new(),
+            cpu_core_values: Vec::new(),
+            cpu_average: 0.0,
+            gpu_value: 0.0,
             processes: Vec::new(),
 
             gpu_monitor,
             memory_info: None,
 
-            timeline_view: TimelineView::Overview,
+            bar_layout: BarLayout::Horizontal,
+            cpu_brand,
             gpu_visible: true,
             selected_process: 0,
             table_state,
             running: true,
             paused: false,
-            timeline_offset: 0,
             filter_mode: false,
             filter_input: String::new(),
             filtered_indices: Vec::new(),
@@ -133,10 +132,9 @@ impl App {
     }
 
     /// Process any pending data updates from the background thread.
-    /// Returns true if any data was updated.
-    /// App maintains its own history buffers and appends incremental values.
+    /// Returns true if any data was updated. Only the latest value of each
+    /// metric is kept — the bar meters show current state, no history.
     pub fn process_updates(&mut self, rx: &Receiver<DataUpdate>) -> bool {
-        const MAX_HISTORY: usize = 1200;
         let mut updated = false;
 
         // Drain all available updates (non-blocking)
@@ -146,45 +144,18 @@ impl App {
                     core_values,
                     average_value,
                 } => {
-                    // Initialise history vectors if needed
-                    if self.cpu_core_histories.len() != core_values.len() {
-                        self.cpu_core_histories = (0..core_values.len())
-                            .map(|_| VecDeque::with_capacity(MAX_HISTORY))
-                            .collect();
-                    }
-
-                    // Append new values to histories
-                    for (i, &value) in core_values.iter().enumerate() {
-                        if i < self.cpu_core_histories.len() {
-                            self.cpu_core_histories[i].push_back(value);
-                            if self.cpu_core_histories[i].len() > MAX_HISTORY {
-                                self.cpu_core_histories[i].pop_front();
-                            }
-                        }
-                    }
-
-                    self.cpu_average_history.push_back(average_value);
-                    if self.cpu_average_history.len() > MAX_HISTORY {
-                        self.cpu_average_history.pop_front();
-                    }
+                    self.cpu_core_values = core_values;
+                    self.cpu_average = average_value;
                     updated = true;
                 }
                 DataUpdate::Gpu { overall_value } => {
-                    self.gpu_overall_history.push_back(overall_value);
-                    if self.gpu_overall_history.len() > MAX_HISTORY {
-                        self.gpu_overall_history.pop_front();
-                    }
+                    self.gpu_value = overall_value;
                     updated = true;
                 }
-                DataUpdate::Memory { usage_value, info } => {
-                    self.memory_usage_history.push_back(usage_value);
-                    if self.memory_usage_history.len() > MAX_HISTORY {
-                        self.memory_usage_history.pop_front();
-                    }
-                    self.memory_pressure_history.push_back(info.pressure);
-                    if self.memory_pressure_history.len() > MAX_HISTORY {
-                        self.memory_pressure_history.pop_front();
-                    }
+                DataUpdate::Memory {
+                    usage_value: _,
+                    info,
+                } => {
                     self.memory_info = Some(info);
                     updated = true;
                 }
@@ -350,20 +321,14 @@ impl App {
                 self.sort_mode = self.sort_mode.next();
                 let _ = self.command_tx.send(DataCommand::ChangeSortMode);
             }
-            KeyCode::Char('+') | KeyCode::Char('=') => {
-                self.timeline_offset = self.timeline_offset.saturating_sub(30);
-            }
-            KeyCode::Char('-') => {
-                self.timeline_offset = (self.timeline_offset + 30).min(MAX_TIMELINE_OFFSET);
+            KeyCode::Char('b') => {
+                self.bar_layout = self.bar_layout.toggled();
             }
             KeyCode::Char('v') => {
                 self.gpu_visible = !self.gpu_visible;
                 let _ = self
                     .command_tx
                     .send(DataCommand::SetGpuActive(self.gpu_visible));
-            }
-            KeyCode::Tab | KeyCode::Char('t') => {
-                self.timeline_view = self.timeline_view.next();
             }
             KeyCode::Char('K') => {
                 let processes = self.get_filtered_processes();
@@ -424,18 +389,6 @@ impl App {
         }
     }
 
-    /// Returns current CPU usage for each core (last recorded value)
-    pub fn get_cpu_usages(&self) -> Vec<(String, f32)> {
-        self.cpu_core_histories
-            .iter()
-            .enumerate()
-            .map(|(i, history)| {
-                let usage = history.back().copied().unwrap_or(0.0);
-                (format!("CPU {}", i), usage)
-            })
-            .collect()
-    }
-
     pub fn get_all_processes(&self) -> &[ProcessInfo] {
         &self.processes
     }
@@ -452,30 +405,8 @@ impl App {
         self.paused
     }
 
-    pub fn get_timeline_position_text(&self) -> String {
-        if self.timeline_offset == 0 {
-            "Live".to_string()
-        } else {
-            let minutes = self.timeline_offset / 60;
-            let seconds = self.timeline_offset % 60;
-            if minutes > 0 {
-                format!("-{}m{}s", minutes, seconds)
-            } else {
-                format!("-{}s", seconds)
-            }
-        }
-    }
-
-    pub fn get_timeline_offset(&self) -> usize {
-        self.timeline_offset
-    }
-
     pub fn is_gpu_visible(&self) -> bool {
         self.gpu_visible && self.gpu_monitor.is_available()
-    }
-
-    pub fn get_cpu_average_history(&self) -> &VecDeque<f32> {
-        &self.cpu_average_history
     }
 
     pub fn get_sort_mode(&self) -> SortMode {
