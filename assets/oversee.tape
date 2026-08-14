@@ -1,6 +1,6 @@
 # vhs tape for oversee README screenshots.
 # Regenerate with:  vhs assets/oversee.tape
-# Requires a build first:  cargo build   (or --release)
+# Requires a release build first:  cargo build --release
 
 Output assets/demo.gif
 
@@ -9,31 +9,33 @@ Set Width 1280
 Set Height 860
 Set Padding 16
 
-# Launch and let the timeline buffer fill (it scrolls in from the right over
-# time, so a narrower window fills faster).
 Hide
-Type "./target/debug/oversee"
+Type "./target/release/oversee"
 Enter
-Sleep 70s
+Sleep 5s
 Show
 
-# Overview (default) — combined CPU / GPU / memory.
+# Bar meters (default view): per-core CPU, GPU, MEM/SWP.
+Sleep 4s
 Screenshot assets/overview.png
+
+# Filter processes by name.
+Type "/"
+Sleep 1s
+Type@150ms "brave"
+Sleep 1s
+Enter
+Sleep 3s
+
+# Clear the filter again.
+Type "/"
+Sleep 500ms
+Escape
 Sleep 2s
 
-# Tab cycles the timeline metric.
-Tab
-Sleep 3s
-Screenshot assets/cpu.png
-
-# GPU cores (only interesting with sudo / powermetrics; skipped as a still).
-Tab
-Sleep 3s
-
-Tab
-Sleep 3s
-Screenshot assets/memory.png
-
-# Back to overview for the trailing gif frame.
-Tab
+# Help popup with the keybinds and colour key.
+Type "?"
+Sleep 4s
+Screenshot assets/help.png
+Type "?"
 Sleep 2s
