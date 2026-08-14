@@ -1029,6 +1029,15 @@ fn hori_bar(frac: f32, width: usize) -> String {
     )
 }
 
+/// Vertical meter levels, bottom row first: each row 0 (blank) to 8 (full
+/// block), eighth-block resolution. `frac` is clamped to 0.0–1.0.
+fn vert_bar_levels(frac: f32, rows: usize) -> Vec<u8> {
+    let units = (frac.clamp(0.0, 1.0) * (rows * 8) as f32).round() as usize;
+    (0..rows)
+        .map(|r| (units.saturating_sub(r * 8)).min(8) as u8)
+        .collect()
+}
+
 fn get_gradient_color(usage: f32) -> Color {
     // Smooth gradient from cool to warm as load climbs.
     if usage >= 90.0 {
@@ -1399,6 +1408,19 @@ mod tests {
         for frac in [0.0f32, 0.1, 0.5, 0.99, 1.0] {
             assert_eq!(hori_bar(frac, 18).chars().count(), 18, "{}", frac);
         }
+    }
+
+    #[test]
+    fn test_vert_bar_levels_eighth_blocks() {
+        assert_eq!(vert_bar_levels(0.0, 8), vec![0u8; 8]);
+        assert_eq!(vert_bar_levels(1.0, 8), vec![8u8; 8]);
+        // 0.5 × 64 units = 32 → bottom 4 rows full, top 4 blank.
+        assert_eq!(vert_bar_levels(0.5, 8), vec![8, 8, 8, 8, 0, 0, 0, 0]);
+        // 0.3 × 64 = 19.2 → 19 units: 2 full rows + one row at 3/8.
+        assert_eq!(vert_bar_levels(0.3, 8), vec![8, 8, 3, 0, 0, 0, 0, 0]);
+        // Clamped.
+        assert_eq!(vert_bar_levels(2.0, 4), vec![8u8; 4]);
+        assert_eq!(vert_bar_levels(-1.0, 4), vec![0u8; 4]);
     }
 
     #[test]
