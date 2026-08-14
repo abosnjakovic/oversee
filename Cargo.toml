@@ -12,7 +12,7 @@ keywords = ["macos", "monitor", "system", "gpu", "apple-silicon"]
 categories = ["command-line-utilities", "visualization"]
 
 [dependencies]
-ratatui = { version = "0.29.0", features = ["all-widgets"] }
+ratatui = "0.29.0"
 sysinfo = "0.32"
 crossterm = "0.28"
 libc = "0.2"
