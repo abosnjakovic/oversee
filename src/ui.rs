@@ -1,6 +1,6 @@
-use crate::app::{App, TimelineView};
+use crate::app::{App, BarLayout};
 use crate::process::{ConnectionState, PortInfo, ProcessDetails, ProcessInfo, SortMode};
-use crate::theme::{THEME, TRAIL_TIERS, trail_tier};
+use crate::theme::THEME;
 use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
@@ -23,10 +23,6 @@ fn format_uptime_short() -> String {
     } else {
         format!("{}m", m.max(1))
     }
-}
-
-fn current_load_one() -> f64 {
-    sysinfo::System::load_average().one
 }
 
 fn wrap_to_width(s: &str, width: usize) -> Vec<String> {
@@ -254,37 +250,31 @@ pub fn render(f: &mut Frame, app: &mut App) {
         height: size.height.saturating_sub(2),
     };
 
-    // Main layout: KPI header, per-core CPU line, separator, timeline,
-    // spacing, memory, separator, process list
+    // Main layout: KPI header, separator, bar meters, separator, process list
+    let items_len = bar_items(app).len();
+    let bar_height: u16 = match app.bar_layout {
+        BarLayout::Horizontal => {
+            let cols = if margin_area.width >= 80 { 2 } else { 1 };
+            items_len.div_ceil(cols) as u16
+        }
+        BarLayout::Vertical => 10, // 8 bar rows + label row + value row
+    };
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),  // KPI header strip
-            Constraint::Length(1),  // Per-core CPU line
-            Constraint::Length(1),  // Separator under header
-            Constraint::Length(22), // Timeline graph (full width)
-            Constraint::Length(1),  // Spacing
-            Constraint::Length(1),  // Memory stats (1 line)
-            Constraint::Length(1),  // Separator above process list
-            Constraint::Min(8),     // Process list
+            Constraint::Length(1),          // KPI header strip
+            Constraint::Length(1),          // Separator under header
+            Constraint::Length(bar_height), // Bar meters
+            Constraint::Length(1),          // Separator above process list
+            Constraint::Min(8),             // Process list
         ])
         .split(margin_area);
 
-    // Render the KPI header across the full width
     render_kpi_header(f, app, main_chunks[0]);
-
-    // Per-core CPU usage as a full-width horizontal line under the header
-    render_cpu_cores_line(f, app, main_chunks[1]);
-
-    // Thin separator line under header
-    render_separator(f, main_chunks[2]);
-
-    // Timeline now spans the full width (cores moved out of the right panel)
-    render_chart_timeline(f, app, main_chunks[3]);
-
-    render_memory_section(f, app, main_chunks[5]);
-    render_separator(f, main_chunks[6]);
-    render_process_list(f, app, main_chunks[7]);
+    render_separator(f, main_chunks[1]);
+    render_bars(f, app, main_chunks[2]);
+    render_separator(f, main_chunks[3]);
+    render_process_list(f, app, main_chunks[4]);
 
     // Render kill confirmation dialog if active
     if app.kill_confirmation_mode {
@@ -529,489 +519,225 @@ fn render_kpi_header(f: &mut Frame, app: &App, area: Rect) {
     let label = Style::default().fg(THEME.fg_dim);
     let bullet = Span::styled(" · ", Style::default().fg(THEME.fg_faint));
 
-    // Bold the metric the timeline is currently graphing (toggled with Tab).
-    let active = app.timeline_view;
-    let metric_label = |view: TimelineView| {
-        if active == view {
-            Style::default().fg(THEME.fg).add_modifier(Modifier::BOLD)
-        } else {
-            label
-        }
-    };
-
-    let load = current_load_one();
-    let cpu_avg = app
-        .get_cpu_average_history()
-        .iter()
-        .last()
-        .copied()
-        .unwrap_or(0.0);
-    let gpu_avg = app
-        .gpu_overall_history
-        .iter()
-        .last()
-        .copied()
-        .unwrap_or(0.0);
-    let mem_pct = app
-        .memory_usage_history
-        .iter()
-        .last()
-        .copied()
-        .unwrap_or(0.0);
-
-    let mem_color = match app.memory_info.as_ref().map(|m| m.pressure) {
-        Some(crate::memory::MemoryPressure::Yellow) => THEME.accent_warn,
-        Some(crate::memory::MemoryPressure::Red) => THEME.accent_crit,
-        _ => THEME.mem,
-    };
-
+    let load = sysinfo::System::load_average();
     let proc_count = app.get_all_processes().len();
-    let position = app.get_timeline_position_text();
 
-    let mut spans: Vec<Span> = Vec::new();
-    spans.push(Span::styled(
-        "oversee",
-        Style::default().fg(THEME.fg).add_modifier(Modifier::BOLD),
-    ));
-    spans.push(bullet.clone());
-    spans.push(Span::styled("load ", label));
-    spans.push(Span::styled(
-        format!("{:.2}", load),
-        Style::default().fg(THEME.fg),
-    ));
-    spans.push(bullet.clone());
-    spans.push(Span::styled("cpu ", metric_label(TimelineView::Cpu)));
-    spans.push(Span::styled(
-        format!("{:>3.0}%", cpu_avg),
-        Style::default().fg(THEME.cpu),
-    ));
-    spans.push(bullet.clone());
-    spans.push(Span::styled("gpu ", metric_label(TimelineView::Gpu)));
-    spans.push(Span::styled(
-        format!("{:>3.0}%", gpu_avg),
-        Style::default().fg(THEME.gpu),
-    ));
-    spans.push(bullet.clone());
-    spans.push(Span::styled("mem ", metric_label(TimelineView::Memory)));
-    spans.push(Span::styled(
-        format!("{:>3.0}%", mem_pct),
-        Style::default().fg(mem_color),
-    ));
-    spans.push(bullet.clone());
-    spans.push(Span::styled(
-        format!("{} procs", proc_count),
-        Style::default().fg(THEME.fg_dim),
-    ));
-    spans.push(bullet.clone());
-    spans.push(Span::styled("up ", label));
-    spans.push(Span::styled(
-        format_uptime_short(),
-        Style::default().fg(THEME.fg_dim),
-    ));
-    spans.push(bullet);
-    spans.push(Span::styled(position, Style::default().fg(THEME.fg_faint)));
+    let spans: Vec<Span> = vec![
+        Span::styled(
+            "oversee",
+            Style::default().fg(THEME.fg).add_modifier(Modifier::BOLD),
+        ),
+        bullet.clone(),
+        Span::styled("load ", label),
+        Span::styled(
+            format!("{:.2} {:.2} {:.2}", load.one, load.five, load.fifteen),
+            Style::default().fg(THEME.fg),
+        ),
+        bullet.clone(),
+        Span::styled(format!("{} procs", proc_count), label),
+        bullet.clone(),
+        Span::styled("up ", label),
+        Span::styled(format_uptime_short(), label),
+        bullet,
+        Span::styled(app.cpu_brand.clone(), label),
+    ];
 
     let header = Paragraph::new(Line::from(spans));
     f.render_widget(header, area);
 }
 
-fn render_chart_timeline(f: &mut Frame, app: &App, area: Rect) {
-    let offset = app.get_timeline_offset();
+/// One metric rendered as a bar in either placement.
+struct BarItem {
+    label: String,
+    frac: f32,
+    value: String,
+    color: Color,
+}
 
-    // Build the set of waveforms for the selected metric. Overview overlays the
-    // three aggregate signals (the classic view). CPU shows every core as its
-    // own colour-coded trace; GPU shows the single system-wide trace; memory
-    // shows a usage trace tinted by the pressure level recorded at each point
-    // in time.
-    let waves: Vec<Wave> = match app.timeline_view {
-        TimelineView::Overview => {
-            let mut waves = vec![Wave {
-                data: app.get_cpu_average_history().iter().copied().collect(),
-                palettes: vec![THEME.cpu_trail],
-            }];
-            if app.is_gpu_visible() {
-                waves.push(Wave {
-                    data: app.gpu_overall_history.iter().copied().collect(),
-                    palettes: vec![THEME.gpu_trail],
+/// Cores, then GPU (when visible), MEM, SWP (when swap exists) — the order
+/// bars appear in both placements.
+fn bar_items(app: &App) -> Vec<BarItem> {
+    let mut items: Vec<BarItem> = app
+        .cpu_core_values
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| BarItem {
+            label: format!("C{}", i),
+            frac: v / 100.0,
+            value: format!("{:.0}%", v),
+            color: get_gradient_color(v),
+        })
+        .collect();
+
+    if app.is_gpu_visible() {
+        items.push(BarItem {
+            label: "GPU".to_string(),
+            frac: app.gpu_value / 100.0,
+            value: format!("{:.0}%", app.gpu_value),
+            color: get_gradient_color(app.gpu_value),
+        });
+    }
+
+    let gib = 1024.0 * 1024.0 * 1024.0;
+    let pressure_color = match app.memory_info.as_ref().map(|m| m.pressure) {
+        Some(crate::memory::MemoryPressure::Yellow) => THEME.accent_warn,
+        Some(crate::memory::MemoryPressure::Red) => THEME.accent_crit,
+        _ => THEME.mem,
+    };
+    match app.memory_info {
+        Some(m) => {
+            items.push(BarItem {
+                label: "MEM".to_string(),
+                frac: (m.memory_usage_percentage() / 100.0) as f32,
+                value: format!(
+                    "{:.1}/{:.1}G",
+                    m.used_memory as f64 / gib,
+                    m.total_memory as f64 / gib
+                ),
+                color: pressure_color,
+            });
+            if m.total_swap > 0 {
+                items.push(BarItem {
+                    label: "SWP".to_string(),
+                    frac: (m.swap_usage_percentage() / 100.0) as f32,
+                    value: format!(
+                        "{:.1}/{:.1}G",
+                        m.used_swap as f64 / gib,
+                        m.total_swap as f64 / gib
+                    ),
+                    color: pressure_color,
                 });
             }
-            waves.push(Wave {
-                data: app.memory_usage_history.iter().copied().collect(),
-                palettes: vec![THEME.mem_trail],
-            });
-            waves
         }
-        TimelineView::Cpu => app
-            .cpu_core_histories
-            .iter()
-            .enumerate()
-            .map(|(i, h)| Wave {
-                data: h.iter().copied().collect(),
-                palettes: vec![core_palette(i)],
-            })
-            .collect(),
-        // System-wide only: macOS reports no per-core GPU breakdown, so this is
-        // the same signal as the overview's GPU trace, isolated on its own scale.
-        TimelineView::Gpu => vec![Wave {
-            data: app.gpu_overall_history.iter().copied().collect(),
-            palettes: vec![THEME.gpu_trail],
-        }],
-        TimelineView::Memory => {
-            vec![Wave {
-                data: app.memory_usage_history.iter().copied().collect(),
-                palettes: pressure_col_palettes(app, area.width as usize, offset),
-            }]
-        }
-    };
-
-    render_waves(f, area, &waves, offset);
+        None => items.push(BarItem {
+            label: "MEM".to_string(),
+            frac: 0.0,
+            value: "—".to_string(),
+            color: THEME.fg_faint,
+        }),
+    }
+    items
 }
 
-/// Distinct base hues cycled across cores so individual traces stay
-/// distinguishable when overlaid. Chosen for contrast on a dark terminal.
-const CORE_HUES: [(u8, u8, u8); 12] = [
-    (0, 200, 220),   // cyan
-    (240, 160, 40),  // orange
-    (120, 220, 90),  // green
-    (220, 100, 210), // magenta
-    (240, 220, 70),  // yellow
-    (100, 150, 250), // blue
-    (250, 110, 90),  // salmon
-    (150, 230, 210), // teal
-    (200, 140, 250), // violet
-    (185, 210, 60),  // lime
-    (250, 150, 200), // pink
-    (110, 205, 170), // seafoam
-];
-
-/// A phosphor-fade trail palette for core `i`, derived from its base hue by
-/// scaling brightness across the trail tiers.
-fn core_palette(i: usize) -> [Color; TRAIL_TIERS] {
-    let (r, g, b) = CORE_HUES[i % CORE_HUES.len()];
-    let shade = |f: f32| {
-        Color::Rgb(
-            (r as f32 * f) as u8,
-            (g as f32 * f) as u8,
-            (b as f32 * f) as u8,
-        )
-    };
-    [shade(1.0), shade(0.68), shade(0.44), shade(0.28)]
-}
-
-/// Build a per-character-column trail palette for the memory waveform,
-/// coloured by the memory pressure level at each column. The pressure signal
-/// is pushed through the same slice/interpolate/display pipeline as the usage
-/// signal so the two stay column-aligned by construction.
-fn pressure_col_palettes(
-    app: &App,
-    char_width: usize,
-    timeline_offset: usize,
-) -> Vec<[ratatui::style::Color; TRAIL_TIERS]> {
-    use crate::memory::MemoryPressure;
-
-    const DISPLAY_DURATION: usize = 300;
-    let nums: Vec<f32> = app
-        .memory_pressure_history
-        .iter()
-        .map(|p| match p {
-            MemoryPressure::Green => 0.0,
-            MemoryPressure::Yellow => 1.0,
-            MemoryPressure::Red => 2.0,
-        })
-        .collect();
-
-    let points = get_history_slice(&nums, timeline_offset + DISPLAY_DURATION, timeline_offset);
-    let dense = interpolate_data(points, 4);
-    let display_points = (char_width * 2).min(dense.len());
-    let display = get_display_slice(&dense, display_points);
-
-    (0..char_width)
-        .map(
-            |c| match display.get(c * 2).copied().unwrap_or(0.0).round() as i32 {
-                n if n >= 2 => THEME.mem_crit_trail,
-                1 => THEME.mem_warn_trail,
-                _ => THEME.mem_trail,
-            },
-        )
-        .collect()
-}
-
-/// Build a single full-width line of per-core CPU usage cells in tight
-/// `label:percent` form (e.g. `cpu C0:10% C1:7% …`). Percentages are
-/// colour-graded by load; the line clips on narrow terminals (no wrap).
-///
-/// There is no GPU counterpart: macOS exposes no per-core GPU utilisation, and
-/// the system-wide figure is already in the KPI header.
-fn render_cpu_cores_line(f: &mut Frame, app: &App, area: Rect) {
-    let usages = app.get_cpu_usages();
-    if area.width == 0 || area.height == 0 || usages.is_empty() {
+/// htop-style bar section in the current placement.
+fn render_bars(f: &mut Frame, app: &App, area: Rect) {
+    if area.width == 0 || area.height == 0 {
         return;
     }
-
-    let mut spans: Vec<Span> = Vec::with_capacity(usages.len() * 2 + 1);
-    spans.push(Span::styled("cpu ", Style::default().fg(THEME.fg_dim)));
-
-    for (i, (_name, usage)) in usages.iter().enumerate() {
-        // Colour the core label with its timeline hue so this line doubles as
-        // the legend for the per-core CPU timeline view.
-        spans.push(Span::styled(
-            format!("C{}:", i),
-            Style::default().fg(core_palette(i)[0]),
-        ));
-        spans.push(Span::styled(
-            format!("{:.0}% ", usage),
-            Style::default().fg(get_gradient_color(*usage)),
-        ));
+    let items = bar_items(app);
+    match app.bar_layout {
+        BarLayout::Horizontal => render_bars_horizontal(f, &items, area),
+        BarLayout::Vertical => render_bars_vertical(f, &items, area),
     }
-
-    let line = Paragraph::new(Line::from(spans));
-    f.render_widget(line, area);
 }
 
-/// Interpolate between data points to create denser visualization
-/// Creates `factor` intermediate points between each pair of data points
-fn interpolate_data(data: &[f32], factor: usize) -> Vec<f32> {
-    if data.len() < 2 || factor == 0 {
-        return data.to_vec();
-    }
+/// 2-column grid (1 column on narrow terminals), filling column-first like
+/// htop. Row layout per bar: `LBL ━━━╸···  value`.
+fn render_bars_horizontal(f: &mut Frame, items: &[BarItem], area: Rect) {
+    const VALUE_W: usize = 11; // fits "30.0/48.0G"
+    const LABEL_W: usize = 4;
+    let cols: usize = if area.width >= 80 { 2 } else { 1 };
+    let rows = items.len().div_ceil(cols).max(1);
+    let col_w = (area.width as usize) / cols;
+    let bar_w = col_w.saturating_sub(LABEL_W + VALUE_W + 3).max(4);
 
-    let mut interpolated = Vec::with_capacity(data.len() * factor);
-
-    for i in 0..data.len() - 1 {
-        let current = data[i];
-        let next = data[i + 1];
-
-        // Add the current point
-        interpolated.push(current);
-
-        // Add interpolated points
-        for j in 1..factor {
-            let fraction = j as f32 / factor as f32;
-            let interpolated_value = current + (next - current) * fraction;
-            interpolated.push(interpolated_value);
+    for (i, item) in items.iter().enumerate() {
+        let (col, row) = (i / rows, i % rows);
+        if row as u16 >= area.height {
+            continue;
         }
-    }
-
-    // Add the last point
-    if let Some(&last) = data.last() {
-        interpolated.push(last);
-    }
-
-    interpolated
-}
-
-/// One waveform to plot on the timeline: its full history plus a trail
-/// palette. `palettes` is either a single uniform palette (`len == 1`) or one
-/// palette per character column (used to tint the memory wave by pressure).
-struct Wave {
-    data: Vec<f32>,
-    palettes: Vec<[ratatui::style::Color; TRAIL_TIERS]>,
-}
-
-/// Render an oscilloscope-style timeline for an arbitrary set of waves. Each
-/// wave becomes its own braille trace; later waves draw over earlier ones on
-/// overlap. Uses a buffered per-row approach to batch character rendering.
-fn render_waves(f: &mut Frame, area: Rect, waves: &[Wave], timeline_offset: usize) {
-    use ratatui::text::{Line, Span};
-
-    let available_width = area.width as usize;
-    let available_height = area.height as usize;
-
-    if available_width == 0 || available_height == 0 || waves.is_empty() {
-        return;
-    }
-
-    // Always display 300 seconds, but offset by timeline_offset
-    const DISPLAY_DURATION: usize = 300;
-    let end_offset = timeline_offset;
-    let start_offset = end_offset + DISPLAY_DURATION;
-
-    let char_width = available_width;
-    let char_height = available_height;
-    let dot_height = char_height * 4;
-
-    // Slice, interpolate (4x density) and trim each wave to the visible window.
-    let displays: Vec<Vec<f32>> = waves
-        .iter()
-        .map(|w| {
-            let points = get_history_slice(&w.data, start_offset, end_offset);
-            let dense = interpolate_data(points, 4);
-            let display_points = (available_width * 2).min(dense.len());
-            get_display_slice(&dense, display_points).to_vec()
-        })
-        .collect();
-    let display_points = displays.iter().map(|d| d.len()).max().unwrap_or(0);
-
-    // Buffer stores (braille_bits, winning wave index) per character cell.
-    // `None` marks an empty cell so vertical lines only claim unowned cells.
-    let mut row_buffer: Vec<(u32, Option<usize>)> = vec![(0, None); char_width];
-    // Previous character row per wave, for vertical line connections.
-    let mut prev_rows: Vec<Option<usize>> = vec![None; waves.len()];
-
-    for row_idx in 0..char_height {
-        for cell in row_buffer.iter_mut() {
-            *cell = (0, None);
-        }
-
-        for col in 0..display_points {
-            let char_col = col / 2;
-            let braille_col = col % 2;
-
-            if char_col >= char_width {
-                continue;
-            }
-
-            for (wi, display) in displays.iter().enumerate() {
-                let usage = display.get(col).copied().unwrap_or(0.0).clamp(0.0, 100.0);
-                let dot_row = ((usage / 100.0) * (dot_height - 1) as f32).round() as usize;
-                let cell_row = char_height.saturating_sub(1 + dot_row / 4);
-                let sub_row = 3 - (dot_row % 4);
-
-                if cell_row == row_idx {
-                    row_buffer[char_col].0 |= get_braille_bits(braille_col, sub_row);
-                    row_buffer[char_col].1 = Some(wi);
-                }
-
-                // Vertical line connecting this column's dot to the previous one.
-                if let Some(prev_row) = prev_rows[wi]
-                    && prev_row != cell_row
-                {
-                    let (start, end) = if prev_row < cell_row {
-                        (prev_row, cell_row)
-                    } else {
-                        (cell_row, prev_row)
-                    };
-                    if row_idx > start && row_idx < end {
-                        row_buffer[char_col].0 |= get_vertical_line_bits(braille_col);
-                        if row_buffer[char_col].1.is_none() {
-                            row_buffer[char_col].1 = Some(wi);
-                        }
-                    }
-                }
-
-                if braille_col == 1 {
-                    prev_rows[wi] = Some(cell_row);
-                }
-            }
-        }
-
-        // Compose this row, coalescing adjacent cells with the same style.
-        // Empty cells fall back to grid/cursor decoration so the chart has
-        // structural reference lines beneath the waveform.
-        let on_grid_row = char_height >= 4
-            && (row_idx == char_height / 4
-                || row_idx == char_height / 2
-                || row_idx == (char_height * 3) / 4);
-        let cursor_col = if timeline_offset == 0 && char_width > 0 {
-            Some(char_width - 1)
-        } else {
-            None
-        };
-
-        let mut spans: Vec<Span> = Vec::new();
-        let mut current_chars = String::new();
-        let mut current_style = Style::default();
-        let mut have_run = false;
-
-        for (col, (bits, wave_idx)) in row_buffer.iter().enumerate() {
-            let (ch, style) = if *bits != 0 {
-                let braille = std::char::from_u32(0x2800 + bits).unwrap_or(' ');
-                let tier = trail_tier(col, char_width).min(TRAIL_TIERS - 1);
-                let palettes = &waves[wave_idx.unwrap_or(0)].palettes;
-                let palette = &palettes[col.min(palettes.len() - 1)];
-                (braille, Style::default().fg(palette[tier]))
-            } else if cursor_col == Some(col) {
-                ('│', Style::default().fg(THEME.cursor))
-            } else {
-                let on_grid_col = char_width >= 5
-                    && (col == char_width / 5
-                        || col == (char_width * 2) / 5
-                        || col == (char_width * 3) / 5
-                        || col == (char_width * 4) / 5);
-                if on_grid_row || on_grid_col {
-                    ('·', Style::default().fg(THEME.grid))
-                } else {
-                    (' ', Style::default())
-                }
-            };
-
-            if have_run && style == current_style {
-                current_chars.push(ch);
-            } else {
-                if have_run {
-                    spans.push(Span::styled(
-                        std::mem::take(&mut current_chars),
-                        current_style,
-                    ));
-                }
-                current_chars.push(ch);
-                current_style = style;
-                have_run = true;
-            }
-        }
-
-        if have_run {
-            spans.push(Span::styled(current_chars, current_style));
-        }
-
-        let line = Line::from(spans);
-        let paragraph = Paragraph::new(line);
+        let bar = hori_bar(item.frac, bar_w);
+        let split = bar.find('·').unwrap_or(bar.len());
+        let (fill, rest) = bar.split_at(split);
+        let line = Line::from(vec![
+            Span::styled(
+                format!("{:<1$}", item.label, LABEL_W),
+                Style::default().fg(THEME.fg_dim),
+            ),
+            Span::styled(fill.to_string(), Style::default().fg(item.color)),
+            Span::styled(rest.to_string(), Style::default().fg(THEME.grid)),
+            Span::styled(
+                format!("{:>1$}", item.value, VALUE_W + 1),
+                Style::default().fg(item.color),
+            ),
+        ]);
         f.render_widget(
-            paragraph,
+            Paragraph::new(line),
             Rect {
-                x: area.x,
-                y: area.y + row_idx as u16,
-                width: area.width,
+                x: area.x + (col * col_w) as u16,
+                y: area.y + row as u16,
+                width: col_w as u16,
                 height: 1,
             },
         );
     }
 }
 
-/// Helper to get braille bit value for a position
-fn get_braille_bits(col: usize, row: usize) -> u32 {
-    let dot_values: [[u32; 2]; 4] = [
-        [1, 8],    // Row 0
-        [2, 16],   // Row 1
-        [4, 32],   // Row 2
-        [64, 128], // Row 3
-    ];
-    if row < 4 && col < 2 {
-        dot_values[row][col]
-    } else {
-        0
+/// Equalizer: 8 rows of 2-char-wide eighth-block columns, then a label row
+/// and a value row. Clips trailing bars on narrow terminals.
+fn render_bars_vertical(f: &mut Frame, items: &[BarItem], area: Rect) {
+    const BAR_ROWS: usize = 8;
+    const CELL_W: usize = 4; // 2-char bar + 2 gap, aligning with labels below
+    let visible = ((area.width as usize) / CELL_W).min(items.len());
+    let bar_rows = (area.height as usize).saturating_sub(2).min(BAR_ROWS);
+    if bar_rows == 0 || visible == 0 {
+        return;
     }
-}
+    const BLOCKS: [char; 9] = [' ', '▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
 
-/// Helper to get vertical line bits for a braille column
-fn get_vertical_line_bits(col: usize) -> u32 {
-    if col == 0 {
-        1 | 2 | 4 | 64 // All dots in left column
-    } else {
-        8 | 16 | 32 | 128 // All dots in right column
+    // Bar rows, top-down: row r displays level index (bar_rows - 1 - r).
+    for r in 0..bar_rows {
+        let spans: Vec<Span> = items[..visible]
+            .iter()
+            .map(|item| {
+                let levels = vert_bar_levels(item.frac, bar_rows);
+                let ch = BLOCKS[levels[bar_rows - 1 - r] as usize];
+                Span::styled(format!("{}{}  ", ch, ch), Style::default().fg(item.color))
+            })
+            .collect();
+        f.render_widget(
+            Paragraph::new(Line::from(spans)),
+            Rect {
+                x: area.x,
+                y: area.y + r as u16,
+                width: area.width,
+                height: 1,
+            },
+        );
     }
-}
 
-/// Helper to slice history data with offset
-fn get_history_slice(history: &[f32], start_offset: usize, end_offset: usize) -> &[f32] {
-    if history.len() > start_offset {
-        let start_idx = history.len() - start_offset;
-        let end_idx = history.len() - end_offset;
-        &history[start_idx..end_idx]
-    } else if history.len() > end_offset {
-        let end_idx = history.len() - end_offset;
-        &history[0..end_idx]
-    } else {
-        &[]
-    }
-}
-
-/// Helper to get display slice from interpolated data
-fn get_display_slice(data: &[f32], display_points: usize) -> &[f32] {
-    if data.len() > display_points {
-        &data[data.len() - display_points..]
-    } else {
-        data
+    // Label row + value row (percent only).
+    let labels: Vec<Span> = items[..visible]
+        .iter()
+        .map(|i| {
+            Span::styled(
+                format!("{:<3} ", i.label),
+                Style::default().fg(THEME.fg_dim),
+            )
+        })
+        .collect();
+    let values: Vec<Span> = items[..visible]
+        .iter()
+        .map(|i| {
+            Span::styled(
+                format!("{:<3} ", format!("{:.0}", i.frac * 100.0)),
+                Style::default().fg(i.color),
+            )
+        })
+        .collect();
+    for (off, spans) in [(0u16, labels), (1u16, values)] {
+        let y = area.y + bar_rows as u16 + off;
+        if y < area.bottom() {
+            f.render_widget(
+                Paragraph::new(Line::from(spans)),
+                Rect {
+                    x: area.x,
+                    y,
+                    width: area.width,
+                    height: 1,
+                },
+            );
+        }
     }
 }
 
@@ -1051,69 +777,6 @@ fn get_gradient_color(usage: f32) -> Color {
     } else {
         THEME.fg_dim
     }
-}
-
-fn render_memory_section(f: &mut Frame, app: &App, area: Rect) {
-    use crate::memory::MemoryPressure;
-
-    let Some(memory_info) = app.memory_info else {
-        let stats = Paragraph::new("memory loading…").style(Style::default().fg(THEME.fg_faint));
-        f.render_widget(stats, area);
-        return;
-    };
-
-    let label = Style::default().fg(THEME.fg_dim);
-    let value = Style::default().fg(THEME.fg);
-    let bullet = Span::styled(" · ", Style::default().fg(THEME.fg_faint));
-
-    let pressure_color = match memory_info.pressure {
-        MemoryPressure::Green => THEME.mem,
-        MemoryPressure::Yellow => THEME.accent_warn,
-        MemoryPressure::Red => THEME.accent_crit,
-    };
-
-    let used_gb = memory_info.used_memory as f64 / (1024.0 * 1024.0 * 1024.0);
-    let total_gb = memory_info.total_memory as f64 / (1024.0 * 1024.0 * 1024.0);
-    let free_gb = memory_info.free_memory() as f64 / (1024.0 * 1024.0 * 1024.0);
-
-    let mut spans: Vec<Span> = vec![
-        Span::styled("memory ", label),
-        Span::styled(format!("{:.1}/{:.1} GB", used_gb, total_gb), value),
-        Span::styled(
-            format!(" ({:.0}%)", memory_info.memory_usage_percentage()),
-            Style::default().fg(THEME.mem),
-        ),
-        bullet.clone(),
-        Span::styled("pressure ", label),
-        Span::styled(
-            memory_info.pressure.color_name().to_string(),
-            Style::default().fg(pressure_color),
-        ),
-        bullet.clone(),
-        Span::styled("free ", label),
-        Span::styled(format!("{:.1} GB", free_gb), value),
-    ];
-
-    if memory_info.total_swap > 0 {
-        let used_swap = memory_info.used_swap as f64 / (1024.0 * 1024.0 * 1024.0);
-        let total_swap = memory_info.total_swap as f64 / (1024.0 * 1024.0 * 1024.0);
-        spans.extend([
-            bullet,
-            Span::styled("swap ", label),
-            Span::styled(
-                format!(
-                    "{:.1}/{:.1} GB ({:.0}%)",
-                    used_swap,
-                    total_swap,
-                    memory_info.swap_usage_percentage()
-                ),
-                value,
-            ),
-        ]);
-    }
-
-    let stats = Paragraph::new(Line::from(spans));
-    f.render_widget(stats, area);
 }
 
 fn render_kill_confirmation(f: &mut Frame, app: &App, screen_area: Rect) {
@@ -1393,6 +1056,18 @@ mod tests {
     }
 
     #[test]
+    fn test_horizontal_grid_fills_column_first() {
+        // 17 items, 2 columns → 9 rows; item i maps to (col = i/9, row = i%9).
+        let rows = 17usize.div_ceil(2);
+        assert_eq!(rows, 9);
+        let pos = |i: usize| (i / rows, i % rows);
+        assert_eq!(pos(0), (0, 0)); // C0 top-left
+        assert_eq!(pos(8), (0, 8)); // C8 bottom-left
+        assert_eq!(pos(9), (1, 0)); // C9 top-right
+        assert_eq!(pos(16), (1, 7)); // last item second column
+    }
+
+    #[test]
     fn test_hori_bar_half_step_resolution() {
         assert_eq!(hori_bar(0.0, 18), "·".repeat(18));
         assert_eq!(hori_bar(1.0, 18), "━".repeat(18));
@@ -1421,116 +1096,6 @@ mod tests {
         // Clamped.
         assert_eq!(vert_bar_levels(2.0, 4), vec![8u8; 4]);
         assert_eq!(vert_bar_levels(-1.0, 4), vec![0u8; 4]);
-    }
-
-    #[test]
-    fn test_dot_pattern_generation() {
-        // Test 0% usage - should be all empty dots
-        let (filled, empty) = generate_dot_pattern(0.0);
-        assert_eq!(filled, 0);
-        assert_eq!(empty, 10);
-
-        // Test 50% usage - should be 5 filled, 5 empty
-        let (filled, empty) = generate_dot_pattern(50.0);
-        assert_eq!(filled, 5);
-        assert_eq!(empty, 5);
-
-        // Test 100% usage - should be all filled dots
-        let (filled, empty) = generate_dot_pattern(100.0);
-        assert_eq!(filled, 10);
-        assert_eq!(empty, 0);
-
-        // Test edge case: over 100% - should cap at 10
-        let (filled, empty) = generate_dot_pattern(150.0);
-        assert_eq!(filled, 10);
-        assert_eq!(empty, 0);
-
-        // Test rounding: 85% should round to 9 dots (85/10 = 8.5 -> 9)
-        let (filled, empty) = generate_dot_pattern(85.0);
-        assert_eq!(filled, 9);
-        assert_eq!(empty, 1);
-    }
-
-    #[test]
-    fn test_dot_string_format() {
-        let usage_levels = [0.0, 25.0, 50.0, 75.0, 100.0];
-
-        for usage in usage_levels.iter() {
-            let (filled, empty) = generate_dot_pattern(*usage);
-            let pattern = format!("{}{}", "•".repeat(filled), "·".repeat(empty));
-
-            // Verify total visual character count is always 10
-            assert_eq!(
-                pattern.chars().count(),
-                10,
-                "Pattern should have 10 visual characters for usage: {}",
-                usage
-            );
-
-            // Verify filled + empty = 10
-            assert_eq!(
-                filled + empty,
-                10,
-                "Filled ({}) + empty ({}) should equal 10 for usage: {}",
-                filled,
-                empty,
-                usage
-            );
-
-            // Verify the pattern contains the right characters
-            assert!(
-                pattern.contains("•") || filled == 0,
-                "Pattern should contain filled dots if filled > 0"
-            );
-            assert!(
-                pattern.contains("·") || empty == 0,
-                "Pattern should contain empty dots if empty > 0"
-            );
-        }
-    }
-
-    #[test]
-    fn test_core_name_formatting() {
-        let test_cases = vec![
-            ("CPU 0", 45.0, "CPU 0 : ••••••.... 45%"),
-            ("GPU 15", 80.0, "GPU 15: ••••••••.. 80%"),
-            ("CPU", 100.0, "CPU   : •••••••••• 100%"),
-        ];
-
-        for (name, usage, _expected_pattern) in test_cases {
-            let line = format_core_line(name, usage);
-            // Verify the structure but not exact spacing since that might vary
-            assert!(line.contains(name));
-            assert!(line.contains(&format!("{}%", usage as i32)));
-            assert!(line.contains("•") || usage == 0.0);
-        }
-    }
-
-    #[test]
-    fn test_floating_panel_dimensions() {
-        // Test panel width calculation
-        let test_area = Rect {
-            x: 0,
-            y: 0,
-            width: 120,
-            height: 30,
-        };
-        let panel_width = (test_area.width / 3).max(35);
-        assert_eq!(panel_width, 40); // 120/3 = 40, which is > 35
-
-        // Test minimum width enforcement
-        let small_area = Rect {
-            x: 0,
-            y: 0,
-            width: 90,
-            height: 30,
-        };
-        let small_panel_width = (small_area.width / 3).max(35);
-        assert_eq!(small_panel_width, 35); // 90/3 = 30, but minimum is 35
-
-        // Test height calculation
-        let panel_height = test_area.height.saturating_sub(2);
-        assert_eq!(panel_height, 28);
     }
 
     #[test]
@@ -1565,21 +1130,5 @@ mod tests {
             mk(83, ConnectionState::Established),
         ];
         assert_eq!(format_ports(&many), "80,81,82...");
-    }
-
-    // Helper functions for tests
-    fn generate_dot_pattern(usage: f32) -> (usize, usize) {
-        let filled_dots = (usage / 10.0).round() as usize;
-        let filled_dots = filled_dots.min(10);
-        let empty_dots = 10 - filled_dots;
-        (filled_dots, empty_dots)
-    }
-
-    fn format_core_line(name: &str, usage: f32) -> String {
-        let (filled, empty) = generate_dot_pattern(usage);
-        let filled_str = "•".repeat(filled);
-        let empty_str = "·".repeat(empty);
-        let dots = format!("{}{}", filled_str, empty_str);
-        format!("{:<6}: {} {:>3.0}%", name, dots, usage)
     }
 }
