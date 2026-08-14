@@ -9,6 +9,14 @@ use std::io::{self, Stdout};
 pub type Tui = Terminal<CrosstermBackend<Stdout>>;
 
 pub fn init() -> io::Result<Tui> {
+    // Restore the terminal before the default panic output, otherwise the
+    // backtrace prints into the raw alternate screen and comes out garbled.
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = restore();
+        default_hook(info);
+    }));
+
     execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
     enable_raw_mode()?;
 
