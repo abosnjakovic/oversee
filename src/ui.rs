@@ -831,7 +831,10 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from(vec![
             Span::styled("  • dim", Style::default().fg(THEME.fg_dim)),
             Span::raw(" < 25%   "),
-            Span::styled("• yellow-green", Style::default().fg(Color::Rgb(200, 200, 120))),
+            Span::styled(
+                "• yellow-green",
+                Style::default().fg(Color::Rgb(200, 200, 120)),
+            ),
             Span::raw(" ≥ 25%   "),
             Span::styled("• yellow", Style::default().fg(THEME.accent_warn)),
             Span::raw(" ≥ 50%"),
