@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.8](https://github.com/abosnjakovic/oversee/compare/v0.3.7...v0.3.8) - 2026-08-14
+
+### Added
+
+- replace timeline with htop-style bar meters (b toggles placement)
+- eighth-block vertical bar helper
+- heavy/light-rule horizontal bar helper
+
+### Fixed
+
+- drop stale +/- timeline keys from footer help
+
+### Other
+
+- rustfmt the help colour key lines
+- embed help popup screenshot in README
+- regenerate README and vhs assets for bar meter UI
+- trim ratatui features, restore terminal in panic hook
+- remove vertical bar mode, horizontal only
+- rewrite help for bar meters + colour key
+- implementation plan for htop bar meters
+- spec for htop-style bar meters replacing timeline
+- Update oversee formula to 0.3.7
+
 ## [0.3.7](https://github.com/abosnjakovic/oversee/compare/v0.3.6...v0.3.7) - 2026-08-08
 
 ### Fixed
