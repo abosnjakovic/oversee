@@ -21,6 +21,8 @@ full colour key.
 
 ![Filtering and the help popup](assets/demo.gif)
 
+![Help popup with keybinds and colour key](assets/help.png)
+
 > Screenshots are generated from [`assets/oversee.tape`](assets/oversee.tape) with [vhs](https://github.com/charmbracelet/vhs): `vhs assets/oversee.tape`.
 
 ### Memory Pressure Algorithm
