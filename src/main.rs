@@ -113,6 +113,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
         // Only render if something changed
         if data_updated || event_occurred {
+            if std::mem::take(&mut app.needs_clear) {
+                terminal.clear()?;
+            }
             profile!("render", terminal.draw(|f| ui::render(f, &mut app))?);
         }
     }

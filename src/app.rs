@@ -36,6 +36,11 @@ pub struct App {
     pub kill_target_pid: Option<u32>,
     pub kill_target_name: String,
     pub help_mode: bool,
+    /// Set on terminal resize; main loop must clear the terminal before the
+    /// next draw. A shrink+grow that lands back on the old size is invisible
+    /// to ratatui's autoresize, yet the emulator has already scrolled the
+    /// alternate screen, so a diff-only redraw leaves stale rows behind.
+    pub needs_clear: bool,
     pub pinned_pids: HashSet<u32>,
     sort_mode: SortMode,
 
@@ -100,6 +105,7 @@ impl App {
             kill_target_pid: None,
             kill_target_name: String::new(),
             help_mode: false,
+            needs_clear: false,
             pinned_pids: HashSet::new(),
             sort_mode: SortMode::Cpu,
 
@@ -191,14 +197,25 @@ impl App {
     pub fn handle_event(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
         // Poll timeout sets the idle wakeup floor. Crossterm returns immediately
         // when an event arrives, so key latency is unaffected by this value.
-        #[allow(clippy::collapsible_if)] // Suggested fix uses unstable let-else syntax
         if event::poll(Duration::from_millis(100))? {
-            if let Event::Key(key) = event::read()? {
-                self.handle_key_event(key);
-                return Ok(true);
-            }
+            return Ok(self.apply_event(event::read()?));
         }
         Ok(false)
+    }
+
+    /// Apply one terminal event; returns true if a redraw is needed.
+    fn apply_event(&mut self, ev: Event) -> bool {
+        match ev {
+            Event::Key(key) => {
+                self.handle_key_event(key);
+                true
+            }
+            Event::Resize(_, _) => {
+                self.needs_clear = true;
+                true
+            }
+            _ => false,
+        }
     }
 
     fn handle_key_event(&mut self, key: KeyEvent) {
@@ -461,5 +478,19 @@ impl App {
         }
 
         processes
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resize_event_requests_clear_and_redraw() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx);
+        assert!(!app.needs_clear);
+        assert!(app.apply_event(Event::Resize(80, 24)));
+        assert!(app.needs_clear);
     }
 }
