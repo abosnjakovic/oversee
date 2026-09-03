@@ -104,7 +104,7 @@ fn fetch_fd_count(pid: u32) -> Option<u32> {
         .lines()
         .skip(1)
         .count();
-    Some(count as u32)
+    Some(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
@@ -125,7 +125,7 @@ fn fetch_thread_count_macos(pid: u32) -> Option<u32> {
         .lines()
         .skip(1)
         .count();
-    Some(count as u32)
+    Some(u32::try_from(count).unwrap_or(u32::MAX))
 }
 
 #[cfg(not(target_os = "macos"))]
@@ -274,6 +274,30 @@ fn extract_port(addr: &str) -> Option<u16> {
     port_str.parse().ok()
 }
 
+/// Resolve a process's UID to a username, caching the lookup: the fallback path
+/// is an FFI call, and the same handful of UIDs recur on every refresh.
+fn resolve_user(
+    uid_cache: &mut HashMap<u32, String>,
+    users: &Users,
+    process: &sysinfo::Process,
+) -> String {
+    let Some(uid) = process.user_id() else {
+        return "unknown".to_string();
+    };
+    let uid_value = **uid;
+    if let Some(cached) = uid_cache.get(&uid_value) {
+        return cached.clone();
+    }
+    // sysinfo's user database first, then libc for system users it omits, then
+    // the numeric UID rather than nothing.
+    let username = users.get_user_by_id(uid).map_or_else(
+        || get_username_from_uid(uid_value).unwrap_or_else(|| uid_value.to_string()),
+        |user| user.name().to_string(),
+    );
+    uid_cache.insert(uid_value, username.clone());
+    username
+}
+
 #[derive(Debug)]
 pub struct ProcessMonitor {
     system: System,
@@ -328,6 +352,24 @@ impl ProcessMonitor {
         }
     }
 
+    /// Run lsof and record what it saw for every live process, ports or not.
+    fn rescan_ports(&mut self) {
+        let mut found = get_process_ports();
+        self.last_scan = self
+            .system
+            .processes()
+            .iter()
+            .map(|(pid, process)| {
+                let pid = pid.as_u32();
+                let scanned = ScannedProcess {
+                    start_time: process.start_time(),
+                    ports: found.remove(&pid).unwrap_or_default(),
+                };
+                (pid, scanned)
+            })
+            .collect();
+    }
+
     /// Refresh process information.
     /// - `include_ports`: Whether to run lsof to get port information (expensive)
     /// - `full_refresh`: If true, refresh memory/user/cmd info; if false, only refresh CPU usage
@@ -363,24 +405,8 @@ impl ProcessMonitor {
             sysinfo_start.elapsed().as_millis(),
         );
 
-        // Port information is expensive (lsof), so it is scanned on its own
-        // schedule and cached. Refreshes in between reuse the cache rather than
-        // reporting no ports, which would make ports flicker in the table.
         if include_ports {
-            let mut found = get_process_ports();
-            self.last_scan = self
-                .system
-                .processes()
-                .iter()
-                .map(|(pid, process)| {
-                    let pid = pid.as_u32();
-                    let scanned = ScannedProcess {
-                        start_time: process.start_time(),
-                        ports: found.remove(&pid).unwrap_or_default(),
-                    };
-                    (pid, scanned)
-                })
-                .collect();
+            self.rescan_ports();
         }
 
         // A process the last scan never saw, or one that has taken over a pid
@@ -444,38 +470,16 @@ impl ProcessMonitor {
                     cmd_parts.join(" ")
                 };
 
-                // Get username from UID (with caching to avoid repeated FFI calls)
-                let user = if let Some(uid) = process.user_id() {
-                    let uid_value = **uid;
-                    // Check cache first
-                    if let Some(cached) = self.uid_cache.get(&uid_value) {
-                        cached.clone()
-                    } else {
-                        // First try sysinfo's user database
-                        let username = if let Some(user) = self.users.get_user_by_id(uid) {
-                            user.name().to_string()
-                        } else if let Some(username) = get_username_from_uid(uid_value) {
-                            // Try libc fallback for system users
-                            username
-                        } else {
-                            // Last resort: show numeric UID
-                            uid_value.to_string()
-                        };
-                        // Cache the result
-                        self.uid_cache.insert(uid_value, username.clone());
-                        username
-                    }
-                } else {
-                    // No UID available
-                    "unknown".to_string()
-                };
+                let user = resolve_user(&mut self.uid_cache, &self.users, process);
 
                 let ports = ports_for(process_pid, process.start_time());
 
                 let cwd = process.cwd().map(|p| p.to_string_lossy().into_owned());
                 let exe = process.exe().map(|p| p.to_string_lossy().into_owned());
                 let run_time = process.run_time();
-                let thread_count = process.tasks().map_or(0, |t| t.len() as u32);
+                let thread_count = process
+                    .tasks()
+                    .map_or(0, |t| u32::try_from(t.len()).unwrap_or(u32::MAX));
 
                 ProcessInfo {
                     pid: process_pid,

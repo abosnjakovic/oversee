@@ -1,4 +1,5 @@
-use crate::app::App;
+use crate::app::{App, Mode};
+use crate::convert::{bytes_to_f64, count_to_f32, to_count, to_f32};
 use crate::process::{ConnectionState, PortInfo, ProcessDetails, ProcessInfo, SortMode};
 use crate::theme::THEME;
 use ratatui::{
@@ -31,10 +32,10 @@ fn wrap_to_width(s: &str, width: usize) -> Vec<String> {
     }
     let mut lines = Vec::new();
     let mut buf = String::new();
-    let mut buf_len = 0;
+    let mut buf_len: usize = 0;
     for ch in s.chars() {
         buf.push(ch);
-        buf_len += 1;
+        buf_len = buf_len.saturating_add(1);
         if buf_len >= width {
             lines.push(std::mem::take(&mut buf));
             buf_len = 0;
@@ -162,10 +163,9 @@ fn build_breakout_lines<'a>(
     } else {
         "…".to_string()
     };
-    let fds = match details.and_then(|d| d.fd_count) {
-        Some(n) => n.to_string(),
-        None => "…".to_string(),
-    };
+    let fds = details
+        .and_then(|d| d.fd_count)
+        .map_or_else(|| "…".to_string(), |n| n.to_string());
     let runtime = format_runtime(proc.run_time);
     lines.push(Line::from(vec![
         Span::styled("threads: ", key_style),
@@ -187,7 +187,7 @@ fn build_breakout_lines<'a>(
         }
         if total > MAX_BREAKOUT_PORTS {
             lines.push(Line::from(Span::styled(
-                format!("  ... (+{} more)", total - MAX_BREAKOUT_PORTS),
+                format!("  ... (+{} more)", total.saturating_sub(MAX_BREAKOUT_PORTS)),
                 dim,
             )));
         }
@@ -243,8 +243,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
 
     // Add screen margins (1 char on all sides)
     let margin_area = Rect {
-        x: size.x + 1,
-        y: size.y + 1,
+        x: size.x.saturating_add(1),
+        y: size.y.saturating_add(1),
         width: size.width.saturating_sub(2),
         height: size.height.saturating_sub(2),
     };
@@ -252,8 +252,8 @@ pub fn render(f: &mut Frame, app: &mut App) {
     // Main layout: KPI header, separator, bar meters, separator, process list
     let items_len = bar_items(app).len();
     let cols = if margin_area.width >= 80 { 2 } else { 1 };
-    let bar_height = items_len.div_ceil(cols) as u16;
-    let main_chunks = Layout::default()
+    let bar_height = u16::try_from(items_len.div_ceil(cols)).unwrap_or(u16::MAX);
+    let [header_area, header_rule, bars_area, list_rule, list_area] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),          // KPI header strip
@@ -262,40 +262,27 @@ pub fn render(f: &mut Frame, app: &mut App) {
             Constraint::Length(1),          // Separator above process list
             Constraint::Min(8),             // Process list
         ])
-        .split(margin_area);
+        .areas(margin_area);
 
-    render_kpi_header(f, app, main_chunks[0]);
-    render_separator(f, main_chunks[1]);
-    render_bars(f, app, main_chunks[2]);
-    render_separator(f, main_chunks[3]);
-    render_process_list(f, app, main_chunks[4]);
+    render_kpi_header(f, app, header_area);
+    render_separator(f, header_rule);
+    render_bars(f, app, bars_area);
+    render_separator(f, list_rule);
+    render_process_list(f, app, list_area);
 
     // Render kill confirmation dialog if active
-    if app.kill_confirmation_mode {
+    if app.mode == Mode::KillConfirmation {
         render_kill_confirmation(f, app, size);
     }
 
     // Render help popup if active (render last so it appears on top)
-    if app.help_mode {
+    if app.mode == Mode::Help {
         render_help_popup(f, app);
     }
 }
 
-fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
-    let all_processes = app.get_all_processes();
-    let processes = app.get_filtered_processes();
-
-    // Split for table and help - ensure help gets exactly 1 line at bottom
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Min(5),    // Process table (minimum 5 lines)
-            Constraint::Length(1), // Help text (exactly 1 line at bottom)
-        ])
-        .split(area);
-
-    // Header with sort indicators (active sort gets underline + brighter fg).
-    let sort_mode = app.get_sort_mode();
+/// Column headings, with the active sort column underlined and brightened.
+fn process_table_header(sort_mode: SortMode) -> Row<'static> {
     let header_base = Style::default().fg(THEME.fg_dim);
     let header_active = Style::default()
         .fg(THEME.fg)
@@ -307,7 +294,7 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
             header_base
         }
     };
-    let header = Row::new(vec![
+    Row::new(vec![
         Cell::from(Span::styled(
             format!("{:>8}", "PID"),
             header_style_for(matches!(sort_mode, SortMode::Pid)),
@@ -328,99 +315,119 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
             header_style_for(matches!(sort_mode, SortMode::Name)),
         )),
     ])
-    .height(1);
+    .height(1)
+}
+
+/// One table row for a process: the collapsed single line, or the expanded
+/// form with its breakout lines underneath.
+fn process_row(app: &App, i: usize, proc: &ProcessInfo, cmd_col_width: usize) -> Row<'static> {
+    let is_pinned = app.pinned_pids.contains(&proc.pid);
+    let is_selected = i == app.get_selected_process();
+    let is_expanded = app.expanded_pid == Some(proc.pid);
+
+    let row_style = if is_selected {
+        Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD)
+    } else if is_pinned {
+        Style::default()
+            .fg(THEME.accent_warn)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(THEME.fg)
+    };
+
+    let mem_mb = bytes_to_f64(proc.memory) / (1024.0 * 1024.0);
+
+    let cmd_display = proc.cmd.clone();
+
+    let pid_display = if is_pinned {
+        format!("◆ {}", proc.pid)
+    } else {
+        proc.pid.to_string()
+    };
+
+    // Per-metric coloured numeric cells, dimmed when value is negligible
+    // or unavailable.
+    let metric_cell = |value: Option<f32>, color: Color, width: usize| -> Cell {
+        let style = match value {
+            Some(v) if v >= 1.0 => Style::default().fg(color),
+            _ => Style::default().fg(THEME.fg_faint),
+        };
+        Cell::from(Span::styled(format_metric(value, width), style))
+    };
+    let mem_cell = {
+        let style = if mem_mb < 1.0 {
+            Style::default().fg(THEME.fg_faint)
+        } else {
+            Style::default().fg(THEME.mem)
+        };
+        Cell::from(Span::styled(format!("{mem_mb:>7.0}"), style))
+    };
+    let pid_cell = Cell::from(Span::styled(
+        format!("{pid_display:>8}"),
+        Style::default().fg(THEME.fg_dim),
+    ));
+
+    if is_expanded {
+        let mut cmd_lines: Vec<Line> = vec![Line::from(cmd_display)];
+        cmd_lines.extend(build_breakout_lines(
+            proc,
+            app.selected_details.as_ref(),
+            cmd_col_width,
+        ));
+        let row_height = u16::try_from(cmd_lines.len()).unwrap_or(u16::MAX);
+        Row::new(vec![
+            pid_cell,
+            Cell::from(truncate_string(&proc.user, 8)),
+            metric_cell(Some(proc.cpu_usage), THEME.cpu, 6),
+            metric_cell(proc.gpu_usage, THEME.gpu, 6),
+            Cell::from(format_ports(&proc.ports)),
+            mem_cell,
+            Cell::from(Text::from(cmd_lines)),
+        ])
+        .height(row_height)
+        .style(row_style)
+    } else {
+        Row::new(vec![
+            pid_cell,
+            Cell::from(truncate_string(&proc.user, 8)),
+            metric_cell(Some(proc.cpu_usage), THEME.cpu, 6),
+            metric_cell(proc.gpu_usage, THEME.gpu, 6),
+            Cell::from(format_ports(&proc.ports)),
+            mem_cell,
+            Cell::from(cmd_display),
+        ])
+        .style(row_style)
+    }
+}
+
+fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
+    let all_processes = app.get_all_processes();
+    let processes = app.get_filtered_processes();
+
+    // Split for table and help - ensure help gets exactly 1 line at bottom
+    let [table_and_title, help_area] = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(5),    // Process table (minimum 5 lines)
+            Constraint::Length(1), // Help text (exactly 1 line at bottom)
+        ])
+        .areas(area);
+
+    let header = process_table_header(app.get_sort_mode());
 
     // Width available for the Command column's wrapped breakout content.
     // Fixed cols total 8+8+6+6+12+7 = 47, plus 6 column spacings, plus 2 for highlight symbol.
-    let cmd_col_width = (chunks[0].width as usize).saturating_sub(47 + 6 + 2);
+    let cmd_col_width = usize::from(table_and_title.width).saturating_sub(47 + 6 + 2);
 
     // Process rows
     let rows: Vec<Row> = processes
         .iter()
         .enumerate()
-        .map(|(i, proc)| {
-            let is_pinned = app.pinned_pids.contains(&proc.pid);
-            let is_selected = i == app.get_selected_process();
-            let is_expanded = app.expanded_pid == Some(proc.pid);
-
-            let row_style = if is_selected {
-                Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD)
-            } else if is_pinned {
-                Style::default()
-                    .fg(THEME.accent_warn)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(THEME.fg)
-            };
-
-            let mem_mb = proc.memory as f64 / (1024.0 * 1024.0);
-
-            let cmd_display = proc.cmd.clone();
-
-            let pid_display = if is_pinned {
-                format!("◆ {}", proc.pid)
-            } else {
-                proc.pid.to_string()
-            };
-
-            // Per-metric coloured numeric cells, dimmed when value is negligible
-            // or unavailable.
-            let metric_cell = |value: Option<f32>, color: Color, width: usize| -> Cell {
-                let style = match value {
-                    Some(v) if v >= 1.0 => Style::default().fg(color),
-                    _ => Style::default().fg(THEME.fg_faint),
-                };
-                Cell::from(Span::styled(format_metric(value, width), style))
-            };
-            let mem_cell = {
-                let style = if mem_mb < 1.0 {
-                    Style::default().fg(THEME.fg_faint)
-                } else {
-                    Style::default().fg(THEME.mem)
-                };
-                Cell::from(Span::styled(format!("{mem_mb:>7.0}"), style))
-            };
-            let pid_cell = Cell::from(Span::styled(
-                format!("{pid_display:>8}"),
-                Style::default().fg(THEME.fg_dim),
-            ));
-
-            if is_expanded {
-                let mut cmd_lines: Vec<Line> = vec![Line::from(cmd_display)];
-                cmd_lines.extend(build_breakout_lines(
-                    proc,
-                    app.selected_details.as_ref(),
-                    cmd_col_width,
-                ));
-                let row_height = cmd_lines.len() as u16;
-                Row::new(vec![
-                    pid_cell,
-                    Cell::from(truncate_string(&proc.user, 8)),
-                    metric_cell(Some(proc.cpu_usage), THEME.cpu, 6),
-                    metric_cell(proc.gpu_usage, THEME.gpu, 6),
-                    Cell::from(format_ports(&proc.ports)),
-                    mem_cell,
-                    Cell::from(Text::from(cmd_lines)),
-                ])
-                .height(row_height)
-                .style(row_style)
-            } else {
-                Row::new(vec![
-                    pid_cell,
-                    Cell::from(truncate_string(&proc.user, 8)),
-                    metric_cell(Some(proc.cpu_usage), THEME.cpu, 6),
-                    metric_cell(proc.gpu_usage, THEME.gpu, 6),
-                    Cell::from(format_ports(&proc.ports)),
-                    mem_cell,
-                    Cell::from(cmd_display),
-                ])
-                .style(row_style)
-            }
-        })
+        .map(|(i, proc)| process_row(app, i, proc, cmd_col_width))
         .collect();
 
     // Render title at top of the allocated chunk
-    let title_text = if app.filter_mode {
+    let title_text = if app.mode == Mode::Filter {
         format!(
             "processes ({} total) · filter: {} _",
             all_processes.len(),
@@ -439,19 +446,16 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
     let title = Paragraph::new(title_text).style(Style::default().fg(THEME.fg_dim));
 
     let title_area = Rect {
-        x: chunks[0].x,
-        y: chunks[0].y,
-        width: chunks[0].width,
         height: 1,
+        ..table_and_title
     };
     f.render_widget(title, title_area);
 
     // Create table in remaining space of the first chunk
     let table_area = Rect {
-        x: chunks[0].x,
-        y: chunks[0].y + 1,
-        width: chunks[0].width,
-        height: chunks[0].height.saturating_sub(1),
+        y: table_and_title.y.saturating_add(1),
+        height: table_and_title.height.saturating_sub(1),
+        ..table_and_title
     };
 
     let table = Table::new(
@@ -473,9 +477,9 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_stateful_widget(table, table_area, &mut app.table_state);
 
     // Help text
-    let help_text = if app.kill_confirmation_mode {
+    let help_text = if app.mode == Mode::KillConfirmation {
         "confirm kill · [Y] yes · [N] no · esc cancel"
-    } else if app.filter_mode {
+    } else if app.mode == Mode::Filter {
         "type to filter · enter apply · esc cancel"
     } else if app.is_paused() {
         "[paused] space resume · q quit · ↑↓ nav · enter pin · K kill · s sort · / filter · g/G top/bot · ? help"
@@ -483,7 +487,7 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
         "space pause · q quit · ↑↓ nav · enter pin · K kill · s sort · / filter · g/G top/bot · ? help"
     };
 
-    let help_style = if app.kill_confirmation_mode {
+    let help_style = if app.mode == Mode::KillConfirmation {
         Style::default().fg(THEME.accent_crit)
     } else {
         Style::default().fg(THEME.fg_faint)
@@ -493,14 +497,14 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
         .style(help_style)
         .wrap(Wrap { trim: true });
 
-    f.render_widget(help, chunks[1]);
+    f.render_widget(help, help_area);
 }
 
 fn render_separator(f: &mut Frame, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let line = "─".repeat(area.width as usize);
+    let line = "─".repeat(usize::from(area.width));
     let sep = Paragraph::new(line).style(Style::default().fg(THEME.separator));
     f.render_widget(sep, area);
 }
@@ -582,22 +586,22 @@ fn bar_items(app: &App) -> Vec<BarItem> {
         Some(m) => {
             items.push(BarItem {
                 label: "MEM".to_string(),
-                frac: (m.memory_usage_percentage() / 100.0) as f32,
+                frac: to_f32(m.memory_usage_percentage() / 100.0),
                 value: format!(
                     "{:.1}/{:.1}G",
-                    m.used_memory as f64 / gib,
-                    m.total_memory as f64 / gib
+                    bytes_to_f64(m.used_memory) / gib,
+                    bytes_to_f64(m.total_memory) / gib
                 ),
                 color: pressure_color,
             });
             if m.total_swap > 0 {
                 items.push(BarItem {
                     label: "SWP".to_string(),
-                    frac: (m.swap_usage_percentage() / 100.0) as f32,
+                    frac: to_f32(m.swap_usage_percentage() / 100.0),
                     value: format!(
                         "{:.1}/{:.1}G",
-                        m.used_swap as f64 / gib,
-                        m.total_swap as f64 / gib
+                        bytes_to_f64(m.used_swap) / gib,
+                        bytes_to_f64(m.total_swap) / gib
                     ),
                     color: pressure_color,
                 });
@@ -626,12 +630,15 @@ fn render_bars(f: &mut Frame, app: &App, area: Rect) {
     let items = &bar_items(app);
     let cols: usize = if area.width >= 80 { 2 } else { 1 };
     let rows = items.len().div_ceil(cols).max(1);
-    let col_w = (area.width as usize) / cols;
+    let col_w = usize::from(area.width).checked_div(cols).unwrap_or(0);
     let bar_w = col_w.saturating_sub(LABEL_W + VALUE_W + 3).max(4);
 
     for (i, item) in items.iter().enumerate() {
-        let (col, row) = (i / rows, i % rows);
-        if row as u16 >= area.height {
+        let (col, row) = (
+            i.checked_div(rows).unwrap_or(0),
+            i.checked_rem(rows).unwrap_or(0),
+        );
+        if u16::try_from(row).unwrap_or(u16::MAX) >= area.height {
             continue;
         }
         let bar = hori_bar(item.frac, bar_w);
@@ -652,9 +659,13 @@ fn render_bars(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(
             Paragraph::new(line),
             Rect {
-                x: area.x + (col * col_w) as u16,
-                y: area.y + row as u16,
-                width: col_w as u16,
+                x: area
+                    .x
+                    .saturating_add(u16::try_from(col.saturating_mul(col_w)).unwrap_or(u16::MAX)),
+                y: area
+                    .y
+                    .saturating_add(u16::try_from(row).unwrap_or(u16::MAX)),
+                width: u16::try_from(col_w).unwrap_or(u16::MAX),
                 height: 1,
             },
         );
@@ -664,14 +675,14 @@ fn render_bars(f: &mut Frame, app: &App, area: Rect) {
 /// htop-style horizontal meter: `━` full cells, one `╸` half-step, `·` rest.
 /// Exactly `width` chars; `frac` is clamped to 0.0–1.0.
 fn hori_bar(frac: f32, width: usize) -> String {
-    let units = (frac.clamp(0.0, 1.0) * (width * 2) as f32).round() as usize;
+    let units = to_count((frac.clamp(0.0, 1.0) * count_to_f32(width.saturating_mul(2))).round());
     let full = units / 2;
     let half = units % 2;
     format!(
         "{}{}{}",
         "━".repeat(full),
         if half == 1 { "╸" } else { "" },
-        "·".repeat(width - full - half)
+        "·".repeat(width.saturating_sub(full).saturating_sub(half))
     )
 }
 
@@ -710,7 +721,7 @@ fn render_kill_confirmation(f: &mut Frame, app: &App, screen_area: Rect) {
     f.render_widget(clear_widget, dialog_area);
 
     // Create the dialog content
-    let dialog_chunks = Layout::default()
+    let [title_line, _, info_line, warning_line, _, options_line] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Title
@@ -721,7 +732,7 @@ fn render_kill_confirmation(f: &mut Frame, app: &App, screen_area: Rect) {
             Constraint::Length(1), // Options
             Constraint::Length(1), // Border
         ])
-        .split(dialog_area);
+        .areas(dialog_area);
 
     // Dialog border
     let border_block = ratatui::widgets::Block::default()
@@ -739,76 +750,72 @@ fn render_kill_confirmation(f: &mut Frame, app: &App, screen_area: Rect) {
                 .fg(THEME.accent_crit)
                 .add_modifier(Modifier::BOLD),
         );
-    f.render_widget(title, dialog_chunks[0]);
+    f.render_widget(title, title_line);
 
     // Process information
-    let process_info = if let Some(pid) = app.kill_target_pid {
-        format!("PID {} · {}", pid, app.kill_target_name)
-    } else {
-        "unknown process".to_string()
-    };
+    let process_info = app.kill_target_pid.map_or_else(
+        || "unknown process".to_string(),
+        |pid| format!("PID {} · {}", pid, app.kill_target_name),
+    );
     let process_text = Paragraph::new(process_info)
         .alignment(ratatui::layout::Alignment::Center)
         .style(Style::default().fg(THEME.fg));
-    f.render_widget(process_text, dialog_chunks[2]);
+    f.render_widget(process_text, info_line);
 
     // Warning message
     let warning_text = "this action cannot be undone";
     let warning = Paragraph::new(warning_text)
         .alignment(ratatui::layout::Alignment::Center)
         .style(Style::default().fg(THEME.accent_warn));
-    f.render_widget(warning, dialog_chunks[3]);
+    f.render_widget(warning, warning_line);
 
     // Options
     let options_text = "[Y] kill    [N] cancel";
     let options = Paragraph::new(options_text)
         .alignment(ratatui::layout::Alignment::Center)
         .style(Style::default().fg(THEME.fg_dim));
-    f.render_widget(options, dialog_chunks[5]);
+    f.render_widget(options, options_line);
 }
 
-fn render_help_popup(f: &mut Frame, _app: &App) {
-    use ratatui::widgets::{Block, Borders, Clear};
+/// The keybind reference shown in the help popup.
+/// A top-level heading in the help popup.
+fn help_heading(text: &'static str) -> Line<'static> {
+    Line::from(vec![Span::styled(
+        text,
+        Style::default()
+            .fg(THEME.accent_warn)
+            .add_modifier(Modifier::BOLD),
+    )])
+}
 
-    // Calculate popup size (80% of screen)
-    let popup_area = {
-        let area = f.area();
-        let horizontal_margin = area.width / 10;
-        let vertical_margin = area.height / 10;
-        ratatui::layout::Rect {
-            x: horizontal_margin,
-            y: vertical_margin,
-            width: area.width.saturating_sub(horizontal_margin * 2),
-            height: area.height.saturating_sub(vertical_margin * 2),
-        }
-    };
+/// A section heading within one part of the help popup.
+fn help_subheading(text: &'static str) -> Line<'static> {
+    Line::from(vec![Span::styled(
+        text,
+        Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD),
+    )])
+}
 
-    // Clear the area
-    f.render_widget(Clear, popup_area);
+fn help_popup_lines() -> Vec<Line<'static>> {
+    let mut lines = help_keybind_lines();
+    lines.extend(help_colour_key_lines());
+    lines.extend(help_pressure_lines());
+    lines.extend(help_about_lines());
+    lines
+}
 
-    // Create help content
-    let help_text = vec![
-        Line::from(vec![Span::styled(
-            "KEYBINDS",
-            Style::default()
-                .fg(THEME.accent_warn)
-                .add_modifier(Modifier::BOLD),
-        )]),
+fn help_keybind_lines() -> Vec<Line<'static>> {
+    vec![
+        help_heading("KEYBINDS"),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Navigation:",
-            Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD),
-        )]),
+        help_subheading("Navigation:"),
         Line::from("  j/k or ↑↓     Navigate process list up/down"),
         Line::from("  g             Jump to top of process list"),
         Line::from("  G             Jump to bottom of process list"),
         Line::from("  Page Up/Down  Navigate by 10 processes"),
         Line::from("  Home/End      Jump to first/last process"),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Actions:",
-            Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD),
-        )]),
+        help_subheading("Actions:"),
         Line::from("  Space         Pause/Resume monitoring"),
         Line::from("  Enter         Pin/Unpin process (shows full command)"),
         Line::from("  s             Cycle through sort modes"),
@@ -818,17 +825,14 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from("  ?             Toggle this help popup"),
         Line::from("  q or ESC      Quit application"),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "COLOUR KEY",
-            Style::default()
-                .fg(THEME.accent_warn)
-                .add_modifier(Modifier::BOLD),
-        )]),
+    ]
+}
+
+fn help_colour_key_lines() -> Vec<Line<'static>> {
+    vec![
+        help_heading("COLOUR KEY"),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Load gradient (CPU / GPU bars):",
-            Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD),
-        )]),
+        help_subheading("Load gradient (CPU / GPU bars):"),
         Line::from(vec![
             Span::styled("  • dim", Style::default().fg(THEME.fg_dim)),
             Span::raw(" < 25%   "),
@@ -847,10 +851,7 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
             Span::raw(" ≥ 90%"),
         ]),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Memory pressure (MEM / SWP bar colour):",
-            Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD),
-        )]),
+        help_subheading("Memory pressure (MEM / SWP bar colour):"),
         Line::from(vec![
             Span::styled("  • green", Style::default().fg(THEME.mem)),
             Span::raw(" normal   "),
@@ -860,27 +861,21 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
             Span::raw(" critical"),
         ]),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "MEMORY PRESSURE ALGORITHM",
-            Style::default()
-                .fg(THEME.accent_warn)
-                .add_modifier(Modifier::BOLD),
-        )]),
+    ]
+}
+
+fn help_pressure_lines() -> Vec<Line<'static>> {
+    vec![
+        help_heading("MEMORY PRESSURE ALGORITHM"),
         Line::from(""),
         Line::from("Oversee uses macOS's native memory pressure reporting:"),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "How it works:",
-            Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD),
-        )]),
+        help_subheading("How it works:"),
         Line::from("  Queries kern.memorystatus_vm_pressure_level sysctl"),
         Line::from("  Same metric used by Activity Monitor for accuracy"),
         Line::from("  Considers file cache, compression, and memory demand"),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "Pressure Levels:",
-            Style::default().fg(THEME.cpu).add_modifier(Modifier::BOLD),
-        )]),
+        help_subheading("Pressure Levels:"),
         Line::from(vec![
             Span::styled(
                 "  • Green (Normal): ",
@@ -914,12 +909,12 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
         Line::from("High usage with green pressure is optimal. See README for details"),
         Line::from("on why your Mac keeps memory full for better performance."),
         Line::from(""),
-        Line::from(vec![Span::styled(
-            "ABOUT OVERSEE",
-            Style::default()
-                .fg(THEME.accent_warn)
-                .add_modifier(Modifier::BOLD),
-        )]),
+    ]
+}
+
+fn help_about_lines() -> Vec<Line<'static>> {
+    vec![
+        help_heading("ABOUT OVERSEE"),
         Line::from(""),
         Line::from("A modern system monitor for macOS, inspired by htop and btop++,"),
         Line::from("built in Rust with a focus on Apple Silicon performance monitoring."),
@@ -933,7 +928,33 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
                 .fg(THEME.fg_dim)
                 .add_modifier(Modifier::ITALIC),
         )]),
-    ];
+    ]
+}
+
+fn render_help_popup(f: &mut Frame, _app: &App) {
+    use ratatui::widgets::{Block, Borders, Clear};
+
+    // Calculate popup size (80% of screen)
+    let popup_area = {
+        let area = f.area();
+        let horizontal_margin = area.width / 10;
+        let vertical_margin = area.height / 10;
+        ratatui::layout::Rect {
+            x: horizontal_margin,
+            y: vertical_margin,
+            width: area
+                .width
+                .saturating_sub(horizontal_margin.saturating_mul(2)),
+            height: area
+                .height
+                .saturating_sub(vertical_margin.saturating_mul(2)),
+        }
+    };
+
+    // Clear the area
+    f.render_widget(Clear, popup_area);
+
+    let help_text = help_popup_lines();
 
     // Create the popup block
     let block = Block::default()
@@ -956,10 +977,10 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
 /// source and renders as an em dash — never as `0.0`, which would be
 /// indistinguishable from a genuine zero reading.
 fn format_metric(value: Option<f32>, width: usize) -> String {
-    match value {
-        Some(v) => format!("{v:>width$.1}"),
-        None => format!("{:>1$}", "—", width),
-    }
+    value.map_or_else(
+        || format!("{:>1$}", "—", width),
+        |v| format!("{v:>width$.1}"),
+    )
 }
 
 /// Truncate to `max_len` columns, counting characters rather than bytes: a

@@ -9,6 +9,26 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
+/// Which input mode the UI is in. These are mutually exclusive, which three
+/// separate bools could not express: nothing stopped help and filter mode from
+/// both being set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Mode {
+    #[default]
+    Normal,
+    Filter,
+    KillConfirmation,
+    Help,
+}
+
+/// Whether the app is sampling, holding, or on its way out.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RunState {
+    Running,
+    Paused,
+    Quitting,
+}
+
 #[derive(Debug)]
 pub struct App {
     // Data from background thread — latest values only, no history
@@ -27,15 +47,12 @@ pub struct App {
     pub gpu_visible: bool,
     pub selected_process: usize,
     pub table_state: TableState,
-    pub running: bool,
-    pub paused: bool,
-    pub filter_mode: bool,
+    pub run_state: RunState,
     pub filter_input: String,
     pub filtered_indices: Vec<usize>,
-    pub kill_confirmation_mode: bool,
     pub kill_target_pid: Option<u32>,
     pub kill_target_name: String,
-    pub help_mode: bool,
+    pub mode: Mode,
     /// Set on terminal resize; main loop must clear the terminal before the
     /// next draw. A shrink+grow that lands back on the old size is invisible
     /// to ratatui's autoresize, yet the emulator has already scrolled the
@@ -96,15 +113,12 @@ impl App {
             gpu_visible: true,
             selected_process: 0,
             table_state,
-            running: true,
-            paused: false,
-            filter_mode: false,
+            run_state: RunState::Running,
+            mode: Mode::Normal,
             filter_input: String::new(),
             filtered_indices: Vec::new(),
-            kill_confirmation_mode: false,
             kill_target_pid: None,
             kill_target_name: String::new(),
-            help_mode: false,
             needs_clear: false,
             pinned_pids: HashSet::new(),
             sort_mode: SortMode::Cpu,
@@ -154,7 +168,7 @@ impl App {
                     // Reset selection if out of bounds
                     let process_count = self.processes.len();
                     if self.selected_process >= process_count && process_count > 0 {
-                        self.selected_process = process_count - 1;
+                        self.selected_process = process_count.saturating_sub(1);
                     }
 
                     // Clear breakout if expanded process exited
@@ -197,14 +211,14 @@ impl App {
         // Poll timeout sets the idle wakeup floor. Crossterm returns immediately
         // when an event arrives, so key latency is unaffected by this value.
         if event::poll(Duration::from_millis(100))? {
-            return Ok(self.apply_event(event::read()?));
+            return Ok(self.apply_event(&event::read()?));
         }
         Ok(false)
     }
 
     /// Apply one terminal event; returns true if a redraw is needed.
-    fn apply_event(&mut self, ev: Event) -> bool {
-        match ev {
+    fn apply_event(&mut self, ev: &Event) -> bool {
+        match *ev {
             Event::Key(key) => {
                 self.handle_key_event(key);
                 true
@@ -217,98 +231,109 @@ impl App {
         }
     }
 
+    /// Route a key to the handler for whichever mode is active.
     fn handle_key_event(&mut self, key: KeyEvent) {
-        // Handle help mode
-        if self.help_mode {
-            match key.code {
-                KeyCode::Char('?' | 'q') | KeyCode::Esc => {
-                    self.help_mode = false;
-                }
-                _ => {}
-            }
-            return;
+        match self.mode {
+            Mode::Help => self.handle_help_key(key),
+            Mode::KillConfirmation => self.handle_kill_confirmation_key(key),
+            Mode::Filter => self.handle_filter_key(key),
+            Mode::Normal => self.handle_normal_key(key),
         }
+    }
 
-        // Handle kill confirmation mode
-        if self.kill_confirmation_mode {
-            match key.code {
-                KeyCode::Char('y' | 'Y') => {
-                    if let Some(pid) = self.kill_target_pid {
-                        Self::kill_process(pid);
-                    }
-                    self.kill_confirmation_mode = false;
-                    self.kill_target_pid = None;
-                    self.kill_target_name.clear();
-                }
-                KeyCode::Char('n' | 'N') | KeyCode::Esc => {
-                    self.kill_confirmation_mode = false;
-                    self.kill_target_pid = None;
-                    self.kill_target_name.clear();
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // Handle filter mode input
-        if self.filter_mode {
-            match key.code {
-                KeyCode::Esc => {
-                    self.filter_mode = false;
-                    self.filter_input.clear();
-                    self.update_filtered_indices();
-                }
-                KeyCode::Enter => {
-                    self.filter_mode = false;
-                    self.update_filtered_indices();
-                }
-                KeyCode::Backspace => {
-                    self.filter_input.pop();
-                    self.update_filtered_indices();
-                }
-                KeyCode::Char(c) => {
-                    self.filter_input.push(c);
-                    self.update_filtered_indices();
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // Normal mode key handling
+    const fn handle_help_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => {
-                self.running = false;
+            KeyCode::Char('?' | 'q') | KeyCode::Esc => {
+                self.mode = Mode::Normal;
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_kill_confirmation_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('y' | 'Y') => {
+                if let Some(pid) = self.kill_target_pid {
+                    Self::kill_process(pid);
+                }
+                self.mode = Mode::Normal;
+                self.kill_target_pid = None;
+                self.kill_target_name.clear();
+            }
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.kill_target_pid = None;
+                self.kill_target_name.clear();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_filter_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.mode = Mode::Normal;
+                self.filter_input.clear();
+                self.update_filtered_indices();
             }
             KeyCode::Enter => {
-                let processes = self.get_filtered_processes();
-                if let Some(pid) = processes.get(self.selected_process).map(|p| p.pid) {
-                    if self.pinned_pids.contains(&pid) {
-                        self.pinned_pids.remove(&pid);
-                    } else {
-                        self.pinned_pids.insert(pid);
-                    }
-                    if self.expanded_pid == Some(pid) {
-                        self.expanded_pid = None;
-                        self.selected_details = None;
-                        self.details_last_fetched = None;
-                    } else {
-                        self.expanded_pid = Some(pid);
-                        self.selected_details = None;
-                        self.details_last_fetched = Some(Instant::now());
-                        let _ = self.details_tx.send(pid);
-                    }
-                }
+                self.mode = Mode::Normal;
+                self.update_filtered_indices();
             }
+            KeyCode::Backspace => {
+                self.filter_input.pop();
+                self.update_filtered_indices();
+            }
+            KeyCode::Char(c) => {
+                self.filter_input.push(c);
+                self.update_filtered_indices();
+            }
+            _ => {}
+        }
+    }
+
+    /// Pin or unpin the selected process, expanding or collapsing its breakout
+    /// with it, and request the detail fetch the expanded view needs.
+    fn toggle_selected_pin(&mut self) {
+        let processes = self.get_filtered_processes();
+        let Some(pid) = processes.get(self.selected_process).map(|p| p.pid) else {
+            return;
+        };
+        if self.pinned_pids.contains(&pid) {
+            self.pinned_pids.remove(&pid);
+        } else {
+            self.pinned_pids.insert(pid);
+        }
+        self.selected_details = None;
+        if self.expanded_pid == Some(pid) {
+            self.expanded_pid = None;
+            self.details_last_fetched = None;
+        } else {
+            self.expanded_pid = Some(pid);
+            self.details_last_fetched = Some(Instant::now());
+            let _ = self.details_tx.send(pid);
+        }
+    }
+
+    fn handle_normal_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.run_state = RunState::Quitting;
+            }
+            KeyCode::Enter => self.toggle_selected_pin(),
             KeyCode::Char('?') => {
-                self.help_mode = true;
+                self.mode = Mode::Help;
             }
             KeyCode::Char('/') => {
-                self.filter_mode = true;
+                self.mode = Mode::Filter;
             }
             KeyCode::Char(' ') => {
-                self.paused = !self.paused;
-                if self.paused {
+                self.run_state = if self.run_state == RunState::Paused {
+                    RunState::Running
+                } else {
+                    RunState::Paused
+                };
+                if self.run_state == RunState::Paused {
                     let _ = self.command_tx.send(DataCommand::Pause);
                 } else {
                     let _ = self.command_tx.send(DataCommand::Resume);
@@ -330,20 +355,20 @@ impl App {
                     .get(self.selected_process)
                     .map(|p| (p.pid, p.name.clone()))
                 {
-                    self.kill_confirmation_mode = true;
+                    self.mode = Mode::KillConfirmation;
                     self.kill_target_pid = Some(pid);
                     self.kill_target_name = name;
                 }
             }
             // Vim-style navigation
             KeyCode::Char('k') | KeyCode::Up if self.selected_process > 0 => {
-                self.selected_process -= 1;
+                self.selected_process = self.selected_process.saturating_sub(1);
                 self.table_state.select(Some(self.selected_process));
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 let process_count = self.get_filtered_processes().len();
-                if process_count > 0 && self.selected_process < process_count - 1 {
-                    self.selected_process += 1;
+                if self.selected_process.saturating_add(1) < process_count {
+                    self.selected_process = self.selected_process.saturating_add(1);
                     self.table_state.select(Some(self.selected_process));
                 }
             }
@@ -354,7 +379,7 @@ impl App {
             KeyCode::Char('G') | KeyCode::End => {
                 let process_count = self.get_filtered_processes().len();
                 if process_count > 0 {
-                    self.selected_process = process_count - 1;
+                    self.selected_process = process_count.saturating_sub(1);
                     self.table_state.select(Some(self.selected_process));
                 }
             }
@@ -365,7 +390,10 @@ impl App {
             KeyCode::PageDown => {
                 let process_count = self.get_filtered_processes().len();
                 if process_count > 0 {
-                    self.selected_process = (self.selected_process + 10).min(process_count - 1);
+                    self.selected_process = self
+                        .selected_process
+                        .saturating_add(10)
+                        .min(process_count.saturating_sub(1));
                     self.table_state.select(Some(self.selected_process));
                 }
             }
@@ -382,11 +410,11 @@ impl App {
     }
 
     pub const fn is_running(&self) -> bool {
-        self.running
+        !matches!(self.run_state, RunState::Quitting)
     }
 
     pub const fn is_paused(&self) -> bool {
-        self.paused
+        matches!(self.run_state, RunState::Paused)
     }
 
     pub const fn is_gpu_visible(&self) -> bool {
@@ -398,7 +426,7 @@ impl App {
     }
 
     fn kill_process(pid: u32) {
-        let pid = pid as i32;
+        let pid = i32::try_from(pid).unwrap_or(i32::MAX);
         std::thread::spawn(move || {
             unsafe {
                 // Send SIGTERM first to allow graceful shutdown
@@ -478,7 +506,53 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let mut app = App::new(tx);
         assert!(!app.needs_clear);
-        assert!(app.apply_event(Event::Resize(80, 24)));
+        assert!(app.apply_event(&Event::Resize(80, 24)));
         assert!(app.needs_clear);
+    }
+
+    fn key(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::from(code))
+    }
+
+    /// The modes are mutually exclusive, and each one's own exit key returns to
+    /// Normal. Three independent bools let help and filter both be set at once,
+    /// and the dispatcher then silently preferred help.
+    #[test]
+    fn each_mode_is_entered_and_left_on_its_own_key() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx);
+        assert_eq!(app.mode, Mode::Normal);
+
+        app.apply_event(&key(KeyCode::Char('?')));
+        assert_eq!(app.mode, Mode::Help);
+        app.apply_event(&key(KeyCode::Char('/')));
+        assert_eq!(app.mode, Mode::Help, "help must swallow the filter key");
+        app.apply_event(&key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+
+        app.apply_event(&key(KeyCode::Char('/')));
+        assert_eq!(app.mode, Mode::Filter);
+        app.apply_event(&key(KeyCode::Char('x')));
+        assert_eq!(app.filter_input, "x", "filter mode types rather than binds");
+        app.apply_event(&key(KeyCode::Esc));
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(app.filter_input.is_empty());
+    }
+
+    /// Space toggles sampling; q leaves for good. Quitting is not a pause.
+    #[test]
+    fn space_toggles_pause_and_q_quits() {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx);
+        assert!(app.is_running() && !app.is_paused());
+
+        app.apply_event(&key(KeyCode::Char(' ')));
+        assert!(app.is_paused());
+        assert!(app.is_running(), "a paused app is still running");
+        app.apply_event(&key(KeyCode::Char(' ')));
+        assert!(!app.is_paused());
+
+        app.apply_event(&key(KeyCode::Char('q')));
+        assert!(!app.is_running());
     }
 }

@@ -1,4 +1,5 @@
 mod app;
+mod convert;
 mod cpu;
 mod gpu;
 mod memory;
@@ -87,7 +88,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     // Spawn background data collection thread
     let collector_handle = thread::spawn(move || {
-        run_data_collector(update_tx, command_rx);
+        run_data_collector(&update_tx, &command_rx);
     });
 
     // Initialize terminal
@@ -142,7 +143,7 @@ fn should_scan_ports(port_age: Duration, unscanned_pids: bool) -> bool {
     port_age >= PORT_SCAN_INTERVAL || (unscanned_pids && port_age >= PORT_RESCAN_DEBOUNCE)
 }
 
-fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataCommand>) {
+fn run_data_collector(tx: &mpsc::Sender<DataUpdate>, rx: &mpsc::Receiver<DataCommand>) {
     use crate::cpu::CpuMonitor;
     use crate::gpu::GpuMonitor;
     use crate::memory::MemoryMonitor;
@@ -225,7 +226,8 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                 let cpu_avg = if cpu_core_values.is_empty() {
                     0.0
                 } else {
-                    cpu_core_values.iter().sum::<f32>() / cpu_core_values.len() as f32
+                    cpu_core_values.iter().sum::<f32>()
+                        / convert::count_to_f32(cpu_core_values.len())
                 };
                 let _ = tx.send(DataUpdate::Cpu {
                     core_values: cpu_core_values,
@@ -239,7 +241,7 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
 
                 // Memory: send current usage percentage
                 let _ = tx.send(DataUpdate::Memory {
-                    usage_value: mem_info.memory_usage_percentage() as f32,
+                    usage_value: convert::to_f32(mem_info.memory_usage_percentage()),
                     info: mem_info,
                 });
 

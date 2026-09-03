@@ -68,7 +68,7 @@ impl GpuMonitor {
         let background_thread = if available {
             let state_clone = Arc::clone(&state);
             Some(thread::spawn(move || {
-                Self::powermetrics_background_loop(state_clone);
+                Self::powermetrics_background_loop(&state_clone);
             }))
         } else {
             None
@@ -102,7 +102,7 @@ impl GpuMonitor {
     }
 
     /// Background loop that polls powermetrics every 5 seconds
-    fn powermetrics_background_loop(state: Arc<PowermetricsState>) {
+    fn powermetrics_background_loop(state: &PowermetricsState) {
         // Initial delay to let the app start up
         thread::sleep(Duration::from_millis(500));
 
@@ -206,7 +206,7 @@ impl GpuMonitor {
                 if num_start.is_none() {
                     num_start = Some(i);
                 }
-                num_end = Some(i + 1);
+                num_end = Some(i.saturating_add(1));
             } else if c == '%' && num_end.is_some() {
                 // Found the percentage
                 break;
@@ -218,7 +218,11 @@ impl GpuMonitor {
         }
 
         if let (Some(start), Some(end)) = (num_start, num_end) {
-            let num_str: String = line.chars().skip(start).take(end - start).collect();
+            let num_str: String = line
+                .chars()
+                .skip(start)
+                .take(end.saturating_sub(start))
+                .collect();
             num_str.parse::<f32>().ok()
         } else {
             None
