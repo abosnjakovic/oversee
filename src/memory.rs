@@ -191,12 +191,6 @@ impl MemoryMonitor {
     pub const fn get_pressure_history(&self) -> &VecDeque<MemoryPressure> {
         &self.pressure_history
     }
-
-    #[allow(dead_code)] // May be used for future conditional features
-    pub const fn is_available(&self) -> bool {
-        // Memory monitoring is always available
-        true
-    }
 }
 
 impl Default for MemoryMonitor {

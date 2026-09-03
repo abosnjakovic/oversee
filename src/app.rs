@@ -234,7 +234,7 @@ impl App {
             match key.code {
                 KeyCode::Char('y' | 'Y') => {
                     if let Some(pid) = self.kill_target_pid {
-                        self.kill_process(pid);
+                        Self::kill_process(pid);
                     }
                     self.kill_confirmation_mode = false;
                     self.kill_target_pid = None;
@@ -282,8 +282,7 @@ impl App {
             }
             KeyCode::Enter => {
                 let processes = self.get_filtered_processes();
-                if !processes.is_empty() && self.selected_process < processes.len() {
-                    let pid = processes[self.selected_process].pid;
+                if let Some(pid) = processes.get(self.selected_process).map(|p| p.pid) {
                     if self.pinned_pids.contains(&pid) {
                         self.pinned_pids.remove(&pid);
                     } else {
@@ -327,9 +326,10 @@ impl App {
             }
             KeyCode::Char('K') => {
                 let processes = self.get_filtered_processes();
-                if !processes.is_empty() && self.selected_process < processes.len() {
-                    let pid = processes[self.selected_process].pid;
-                    let name = processes[self.selected_process].name.clone();
+                if let Some((pid, name)) = processes
+                    .get(self.selected_process)
+                    .map(|p| (p.pid, p.name.clone()))
+                {
                     self.kill_confirmation_mode = true;
                     self.kill_target_pid = Some(pid);
                     self.kill_target_name = name;
@@ -347,11 +347,11 @@ impl App {
                     self.table_state.select(Some(self.selected_process));
                 }
             }
-            KeyCode::Char('g') => {
+            KeyCode::Char('g') | KeyCode::Home => {
                 self.selected_process = 0;
                 self.table_state.select(Some(self.selected_process));
             }
-            KeyCode::Char('G') => {
+            KeyCode::Char('G') | KeyCode::End => {
                 let process_count = self.get_filtered_processes().len();
                 if process_count > 0 {
                     self.selected_process = process_count - 1;
@@ -366,17 +366,6 @@ impl App {
                 let process_count = self.get_filtered_processes().len();
                 if process_count > 0 {
                     self.selected_process = (self.selected_process + 10).min(process_count - 1);
-                    self.table_state.select(Some(self.selected_process));
-                }
-            }
-            KeyCode::Home => {
-                self.selected_process = 0;
-                self.table_state.select(Some(self.selected_process));
-            }
-            KeyCode::End => {
-                let process_count = self.get_filtered_processes().len();
-                if process_count > 0 {
-                    self.selected_process = process_count - 1;
                     self.table_state.select(Some(self.selected_process));
                 }
             }
@@ -408,7 +397,7 @@ impl App {
         self.sort_mode
     }
 
-    fn kill_process(&self, pid: u32) {
+    fn kill_process(pid: u32) {
         let pid = pid as i32;
         std::thread::spawn(move || {
             unsafe {

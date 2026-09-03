@@ -616,11 +616,12 @@ fn bar_items(app: &App) -> Vec<BarItem> {
 /// htop-style bar section: 2-column grid (1 column on narrow terminals),
 /// filling column-first like htop. Row layout per bar: `LBL ━━━╸···  value`.
 fn render_bars(f: &mut Frame, app: &App, area: Rect) {
+    const VALUE_W: usize = 11; // fits "30.0/48.0G"
+    const LABEL_W: usize = 4;
+
     if area.width == 0 || area.height == 0 {
         return;
     }
-    const VALUE_W: usize = 11; // fits "30.0/48.0G"
-    const LABEL_W: usize = 4;
 
     let items = &bar_items(app);
     let cols: usize = if area.width >= 80 { 2 } else { 1 };
