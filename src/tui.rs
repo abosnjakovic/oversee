@@ -40,14 +40,14 @@ pub struct TuiGuard {
 impl TuiGuard {
     pub fn new() -> io::Result<Self> {
         let terminal = init()?;
-        Ok(TuiGuard { terminal })
+        Ok(Self { terminal })
     }
 }
 
 impl Drop for TuiGuard {
     fn drop(&mut self) {
         if let Err(err) = restore() {
-            eprintln!("Error restoring terminal: {}", err);
+            eprintln!("Error restoring terminal: {err}");
         }
     }
 }

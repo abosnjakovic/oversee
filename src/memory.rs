@@ -22,9 +22,9 @@ fn get_macos_memory_pressure_level() -> Option<u32> {
 
     unsafe {
         let result = sysctlbyname(
-            name.as_ptr() as *const i8,
-            &mut pressure_level as *mut _ as *mut libc::c_void,
-            &mut length,
+            name.as_ptr().cast::<i8>(),
+            (&raw mut pressure_level).cast::<libc::c_void>(),
+            &raw mut length,
             std::ptr::null_mut(),
             0,
         );
@@ -37,7 +37,7 @@ fn get_macos_memory_pressure_level() -> Option<u32> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryPressure {
     Green,  // Normal - macOS reports level 1
     Yellow, // Warning - macOS reports level 2
@@ -45,11 +45,11 @@ pub enum MemoryPressure {
 }
 
 impl MemoryPressure {
-    pub fn color_name(&self) -> &'static str {
+    pub const fn color_name(self) -> &'static str {
         match self {
-            MemoryPressure::Green => "Normal",
-            MemoryPressure::Yellow => "Warning",
-            MemoryPressure::Red => "Critical",
+            Self::Green => "Normal",
+            Self::Yellow => "Warning",
+            Self::Red => "Critical",
         }
     }
 }
@@ -66,7 +66,7 @@ pub struct MemoryInfo {
 }
 
 impl MemoryInfo {
-    pub fn free_memory(&self) -> u64 {
+    pub const fn free_memory(&self) -> u64 {
         self.total_memory.saturating_sub(self.used_memory)
     }
 
@@ -97,7 +97,7 @@ pub struct MemoryMonitor {
 impl MemoryMonitor {
     pub fn new() -> Self {
         let system = System::new();
-        MemoryMonitor {
+        Self {
             system,
             pressure_history: VecDeque::new(),
             max_history: 300, // 5 minutes at 1 second intervals
@@ -188,12 +188,12 @@ impl MemoryMonitor {
     }
 
     #[allow(dead_code)] // May be used for future timeline features
-    pub fn get_pressure_history(&self) -> &VecDeque<MemoryPressure> {
+    pub const fn get_pressure_history(&self) -> &VecDeque<MemoryPressure> {
         &self.pressure_history
     }
 
     #[allow(dead_code)] // May be used for future conditional features
-    pub fn is_available(&self) -> bool {
+    pub const fn is_available(&self) -> bool {
         // Memory monitoring is always available
         true
     }

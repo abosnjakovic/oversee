@@ -33,7 +33,7 @@ struct PowermetricsState {
 }
 
 impl PowermetricsState {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             utilization_bits: AtomicU32::new(0.0_f32.to_bits()),
             should_stop: AtomicBool::new(false),
@@ -74,14 +74,14 @@ impl GpuMonitor {
             None
         };
 
-        GpuMonitor {
+        Self {
             available,
             state,
             _background_thread: background_thread,
         }
     }
 
-    pub fn is_available(&self) -> bool {
+    pub const fn is_available(&self) -> bool {
         self.available
     }
 
@@ -185,7 +185,7 @@ impl GpuMonitor {
             // Alternative: "GPU Power" percentage
             // Note: Nested if required for MSRV compatibility (let chains are unstable)
             #[allow(clippy::collapsible_if)]
-            if line_lower.contains("gpu") && line.contains("%") {
+            if line_lower.contains("gpu") && line.contains('%') {
                 if let Some(pct) = Self::extract_percentage(line) {
                     return Some(pct);
                 }

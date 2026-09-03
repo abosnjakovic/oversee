@@ -20,7 +20,7 @@ impl CpuMonitor {
         // Second refresh to get actual usage
         system.refresh_cpu_usage();
 
-        CpuMonitor { system }
+        Self { system }
     }
 
     pub fn refresh(&mut self) {
@@ -37,7 +37,7 @@ impl CpuMonitor {
             .cpus()
             .iter()
             .enumerate()
-            .map(|(i, cpu)| (format!("CPU {}", i), cpu.cpu_usage()))
+            .map(|(i, cpu)| (format!("CPU {i}"), cpu.cpu_usage()))
             .collect()
     }
 }

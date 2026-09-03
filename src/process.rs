@@ -142,12 +142,12 @@ pub enum SortMode {
 }
 
 impl SortMode {
-    pub fn next(self) -> Self {
+    pub const fn next(self) -> Self {
         match self {
-            SortMode::Cpu => SortMode::Memory,
-            SortMode::Memory => SortMode::Name,
-            SortMode::Name => SortMode::Pid,
-            SortMode::Pid => SortMode::Cpu,
+            Self::Cpu => Self::Memory,
+            Self::Memory => Self::Name,
+            Self::Name => Self::Pid,
+            Self::Pid => Self::Cpu,
         }
     }
 }
@@ -155,8 +155,8 @@ impl SortMode {
 impl Protocol {
     fn from_str(s: &str) -> Option<Self> {
         match s.to_uppercase().as_str() {
-            "TCP" => Some(Protocol::Tcp),
-            "UDP" => Some(Protocol::Udp),
+            "TCP" => Some(Self::Tcp),
+            "UDP" => Some(Self::Udp),
             _ => None,
         }
     }
@@ -165,9 +165,9 @@ impl Protocol {
 impl ConnectionState {
     fn from_str(s: &str) -> Self {
         match s.to_uppercase().as_str() {
-            "LISTEN" => ConnectionState::Listen,
-            "ESTABLISHED" => ConnectionState::Established,
-            _ => ConnectionState::Other,
+            "LISTEN" => Self::Listen,
+            "ESTABLISHED" => Self::Established,
+            _ => Self::Other,
         }
     }
 }
@@ -178,9 +178,9 @@ fn get_process_ports() -> HashMap<u32, Vec<PortInfo>> {
     // Run lsof command to get network connections
     #[cfg(feature = "profile")]
     let lsof_start = Instant::now();
-    let output = match Command::new("lsof").args(["-i", "-P", "-n"]).output() {
-        Ok(output) => output,
-        Err(_) => return port_map, // lsof not available or failed
+    // lsof not available or failed
+    let Ok(output) = Command::new("lsof").args(["-i", "-P", "-n"]).output() else {
+        return port_map;
     };
     #[cfg(feature = "profile")]
     log_timing("lsof_command", lsof_start.elapsed().as_millis());
@@ -219,18 +219,15 @@ fn parse_lsof_line(line: &str) -> Option<(u32, PortInfo)> {
     // identitys  1016 adam   18u  IPv4 0x34f005a6e91ac63b      0t0  UDP *:*
 
     let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 9 {
-        return None;
-    }
 
     // Extract PID (second column, index 1)
-    let pid = parts[1].parse::<u32>().ok()?;
+    let pid = parts.get(1)?.parse::<u32>().ok()?;
 
     // Extract protocol (8th column, index 7: TCP or UDP)
-    let protocol = Protocol::from_str(parts[7])?;
+    let protocol = Protocol::from_str(parts.get(7)?)?;
 
     // Extract address info (9th column, index 8)
-    let addr_part = parts[8];
+    let addr_part = *parts.get(8)?;
 
     // Skip non-port entries like "*:*"
     if addr_part == "*:*" {
@@ -238,21 +235,18 @@ fn parse_lsof_line(line: &str) -> Option<(u32, PortInfo)> {
     }
 
     // Extract state if present (in parentheses at the end)
-    let state = if parts.len() > 9 && parts[9].starts_with('(') && parts[9].ends_with(')') {
-        ConnectionState::from_str(&parts[9][1..parts[9].len() - 1])
-    } else {
-        ConnectionState::Other
-    };
+    let state = parts
+        .get(9)
+        .and_then(|s| s.strip_prefix('('))
+        .and_then(|s| s.strip_suffix(')'))
+        .map_or(ConnectionState::Other, ConnectionState::from_str);
 
     // Parse the address part
-    let (local_addr, remote_addr) = if let Some(arrow_pos) = addr_part.find("->") {
+    let (local_addr, remote_addr) = match addr_part.split_once("->") {
         // Connection: local->remote
-        let local = &addr_part[..arrow_pos];
-        let remote = &addr_part[arrow_pos + 2..];
-        (Some(local.to_string()), Some(remote.to_string()))
-    } else {
+        Some((local, remote)) => (Some(local.to_string()), Some(remote.to_string())),
         // Listening or single address
-        (Some(addr_part.to_string()), None)
+        None => (Some(addr_part.to_string()), None),
     };
 
     // Extract port from local address
@@ -276,12 +270,8 @@ fn extract_port(addr: &str) -> Option<u16> {
     // *:22
     // [::1]:8080
 
-    if let Some(colon_pos) = addr.rfind(':') {
-        let port_str = &addr[colon_pos + 1..];
-        port_str.parse().ok()
-    } else {
-        None
-    }
+    let (_, port_str) = addr.rsplit_once(':')?;
+    port_str.parse().ok()
 }
 
 #[derive(Debug)]
@@ -328,7 +318,7 @@ impl ProcessMonitor {
         // Initialize users list
         let users = Users::new_with_refreshed_list();
 
-        ProcessMonitor {
+        Self {
             system,
             users,
             processes: Vec::new(),
@@ -396,10 +386,9 @@ impl ProcessMonitor {
         // A process the last scan never saw, or one that has taken over a pid
         // since, has unknown ports. Tell the caller so it can rescan sooner.
         let unscanned = self.system.processes().iter().any(|(pid, process)| {
-            !self
-                .last_scan
+            self.last_scan
                 .get(&pid.as_u32())
-                .is_some_and(|scanned| scanned.start_time == process.start_time())
+                .is_none_or(|scanned| scanned.start_time != process.start_time())
         });
 
         // Hoisted out of the closure below so it borrows only this field,
@@ -486,7 +475,7 @@ impl ProcessMonitor {
                 let cwd = process.cwd().map(|p| p.to_string_lossy().into_owned());
                 let exe = process.exe().map(|p| p.to_string_lossy().into_owned());
                 let run_time = process.run_time();
-                let thread_count = process.tasks().map(|t| t.len() as u32).unwrap_or(0);
+                let thread_count = process.tasks().map_or(0, |t| t.len() as u32);
 
                 ProcessInfo {
                     pid: process_pid,
@@ -517,8 +506,9 @@ impl ProcessMonitor {
     fn sort_processes(&mut self) {
         match self.sort_mode {
             SortMode::Cpu => {
+                // total_cmp, not partial_cmp: a NaN cpu_usage would panic on unwrap.
                 self.processes
-                    .sort_by(|a, b| b.cpu_usage.partial_cmp(&a.cpu_usage).unwrap());
+                    .sort_by(|a, b| b.cpu_usage.total_cmp(&a.cpu_usage));
             }
             SortMode::Memory => {
                 self.processes.sort_by_key(|p| std::cmp::Reverse(p.memory));
@@ -558,17 +548,17 @@ fn get_username_from_uid(uid: u32) -> Option<String> {
 
         let ret = libc::getpwuid_r(
             uid,
-            &mut pwd,
-            buf.as_mut_ptr() as *mut libc::c_char,
+            &raw mut pwd,
+            buf.as_mut_ptr().cast::<libc::c_char>(),
             buf.len(),
-            &mut result,
+            &raw mut result,
         );
 
         if ret == 0 && !result.is_null() {
             let username_ptr = (*result).pw_name;
             if !username_ptr.is_null() {
                 let username = CStr::from_ptr(username_ptr);
-                return username.to_str().ok().map(|s| s.to_string());
+                return username.to_str().ok().map(std::string::ToString::to_string);
             }
         }
         None

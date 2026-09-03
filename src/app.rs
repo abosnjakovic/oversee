@@ -82,7 +82,7 @@ impl App {
             .filter(|s| !s.is_empty())
             .unwrap_or_else(|| "cpu".to_string());
 
-        App {
+        Self {
             // Data will be populated from background thread
             cpu_core_values: Vec::new(),
             cpu_average: 0.0,
@@ -183,8 +183,7 @@ impl App {
         if let Some(pid) = self.expanded_pid {
             let stale = self
                 .details_last_fetched
-                .map(|t| t.elapsed() >= Duration::from_secs(2))
-                .unwrap_or(true);
+                .is_none_or(|t| t.elapsed() >= Duration::from_secs(2));
             if stale {
                 self.details_last_fetched = Some(Instant::now());
                 let _ = self.details_tx.send(pid);
@@ -222,7 +221,7 @@ impl App {
         // Handle help mode
         if self.help_mode {
             match key.code {
-                KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Esc => {
+                KeyCode::Char('?' | 'q') | KeyCode::Esc => {
                     self.help_mode = false;
                 }
                 _ => {}
@@ -233,7 +232,7 @@ impl App {
         // Handle kill confirmation mode
         if self.kill_confirmation_mode {
             match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                KeyCode::Char('y' | 'Y') => {
                     if let Some(pid) = self.kill_target_pid {
                         self.kill_process(pid);
                     }
@@ -241,7 +240,7 @@ impl App {
                     self.kill_target_pid = None;
                     self.kill_target_name.clear();
                 }
-                KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
+                KeyCode::Char('n' | 'N') | KeyCode::Esc => {
                     self.kill_confirmation_mode = false;
                     self.kill_target_pid = None;
                     self.kill_target_name.clear();
@@ -389,23 +388,23 @@ impl App {
         &self.processes
     }
 
-    pub fn get_selected_process(&self) -> usize {
+    pub const fn get_selected_process(&self) -> usize {
         self.selected_process
     }
 
-    pub fn is_running(&self) -> bool {
+    pub const fn is_running(&self) -> bool {
         self.running
     }
 
-    pub fn is_paused(&self) -> bool {
+    pub const fn is_paused(&self) -> bool {
         self.paused
     }
 
-    pub fn is_gpu_visible(&self) -> bool {
+    pub const fn is_gpu_visible(&self) -> bool {
         self.gpu_visible && self.gpu_monitor.is_available()
     }
 
-    pub fn get_sort_mode(&self) -> SortMode {
+    pub const fn get_sort_mode(&self) -> SortMode {
         self.sort_mode
     }
 

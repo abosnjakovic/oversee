@@ -154,10 +154,11 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
     let mut process_monitor = ProcessMonitor::new();
 
     let mut paused = false;
-    let mut last_update = Instant::now() - Duration::from_secs(10); // Force immediate update
-    let mut last_port_update = Instant::now() - PORT_SCAN_INTERVAL;
+    // `None` means the timer has never fired, so the first tick runs everything.
+    let mut last_update: Option<Instant> = None;
+    let mut last_port_update: Option<Instant> = None;
     let mut unscanned_pids = false;
-    let mut last_full_process_refresh = Instant::now() - Duration::from_secs(10); // Force immediate full refresh
+    let mut last_full_process_refresh: Option<Instant> = None;
 
     loop {
         // Check for commands (non-blocking)
@@ -182,7 +183,7 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
             // Update everything every 2 seconds. Each tick drives a sysinfo
             // process refresh which on macOS dispatches work across libdispatch
             // workers; halving the rate halves that idle cost.
-            if now.duration_since(last_update) >= Duration::from_secs(2) {
+            if last_update.is_none_or(|t| now.duration_since(t) >= Duration::from_secs(2)) {
                 // CPU
                 profile!("cpu_refresh", cpu_monitor.refresh());
                 let usages = cpu_monitor.cpu_usages();
@@ -193,20 +194,20 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
 
                 // Processes: CPU-only refresh every 2 seconds, full refresh every 10 seconds.
                 // Ports come from the monitor's cache in between scans.
-                let include_ports =
-                    should_scan_ports(now.duration_since(last_port_update), unscanned_pids);
-                let full_refresh =
-                    now.duration_since(last_full_process_refresh) >= Duration::from_secs(10);
+                let port_age = last_port_update.map_or(Duration::MAX, |t| now.duration_since(t));
+                let include_ports = should_scan_ports(port_age, unscanned_pids);
+                let full_refresh = last_full_process_refresh
+                    .is_none_or(|t| now.duration_since(t) >= Duration::from_secs(10));
 
                 unscanned_pids = if include_ports {
-                    last_port_update = now;
-                    last_full_process_refresh = now;
+                    last_port_update = Some(now);
+                    last_full_process_refresh = Some(now);
                     profile!(
                         "process_refresh_with_ports",
                         process_monitor.refresh(true, true)
                     )
                 } else if full_refresh {
-                    last_full_process_refresh = now;
+                    last_full_process_refresh = Some(now);
                     profile!("process_refresh_full", process_monitor.refresh(false, true))
                 } else {
                     profile!(
@@ -221,10 +222,10 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
 
                 // CPU: send current values for each core
                 let cpu_core_values: Vec<f32> = usages.iter().map(|(_, u)| *u).collect();
-                let cpu_avg = if !cpu_core_values.is_empty() {
-                    cpu_core_values.iter().sum::<f32>() / cpu_core_values.len() as f32
-                } else {
+                let cpu_avg = if cpu_core_values.is_empty() {
                     0.0
+                } else {
+                    cpu_core_values.iter().sum::<f32>() / cpu_core_values.len() as f32
                 };
                 let _ = tx.send(DataUpdate::Cpu {
                     core_values: cpu_core_values,
@@ -248,7 +249,7 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                 #[cfg(feature = "profile")]
                 log_timing("channel_send_all", send_start.elapsed().as_millis());
 
-                last_update = now;
+                last_update = Some(now);
             }
         }
 

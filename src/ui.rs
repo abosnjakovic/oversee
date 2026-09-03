@@ -17,9 +17,9 @@ fn format_uptime_short() -> String {
     let h = (secs % 86_400) / 3_600;
     let m = (secs % 3_600) / 60;
     if d > 0 {
-        format!("{}d{:02}h", d, h)
+        format!("{d}d{h:02}h")
     } else if h > 0 {
-        format!("{}h{:02}m", h, m)
+        format!("{h}h{m:02}m")
     } else {
         format!("{}m", m.max(1))
     }
@@ -54,11 +54,11 @@ fn format_runtime(secs: u64) -> String {
     let m = (secs % 3600) / 60;
     let s = secs % 60;
     if h > 0 {
-        format!("{}h{:02}m", h, m)
+        format!("{h}h{m:02}m")
     } else if m > 0 {
-        format!("{}m{:02}s", m, s)
+        format!("{m}m{s:02}s")
     } else {
-        format!("{}s", s)
+        format!("{s}s")
     }
 }
 
@@ -75,10 +75,10 @@ fn format_port_line(port: &PortInfo) -> String {
     let local = port.local_address.as_deref().unwrap_or("-");
     let remote = port.remote_address.as_deref();
     match (state, remote) {
-        ("", None) => format!("  {}  {}", proto, local),
-        ("", Some(r)) => format!("  {}  {} -> {}", proto, local, r),
-        (st, None) => format!("  {}  {}  {}", proto, local, st),
-        (st, Some(r)) => format!("  {}  {}  {} -> {}", proto, local, st, r),
+        ("", None) => format!("  {proto}  {local}"),
+        ("", Some(r)) => format!("  {proto}  {local} -> {r}"),
+        (st, None) => format!("  {proto}  {local}  {st}"),
+        (st, Some(r)) => format!("  {proto}  {local}  {st} -> {r}"),
     }
 }
 
@@ -158,8 +158,7 @@ fn build_breakout_lines<'a>(
         proc.thread_count.to_string()
     } else if let Some(d) = details {
         d.thread_count_macos
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "…".to_string())
+            .map_or_else(|| "…".to_string(), |n| n.to_string())
     } else {
         "…".to_string()
     };
@@ -379,10 +378,10 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
                 } else {
                     Style::default().fg(THEME.mem)
                 };
-                Cell::from(Span::styled(format!("{:>7.0}", mem_mb), style))
+                Cell::from(Span::styled(format!("{mem_mb:>7.0}"), style))
             };
             let pid_cell = Cell::from(Span::styled(
-                format!("{:>8}", pid_display),
+                format!("{pid_display:>8}"),
                 Style::default().fg(THEME.fg_dim),
             ));
 
@@ -529,7 +528,7 @@ fn render_kpi_header(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(THEME.fg),
         ),
         bullet.clone(),
-        Span::styled(format!("{} procs", proc_count), label),
+        Span::styled(format!("{proc_count} procs"), label),
         bullet.clone(),
         Span::styled("up ", label),
         Span::styled(format_uptime_short(), label),
@@ -557,9 +556,9 @@ fn bar_items(app: &App) -> Vec<BarItem> {
         .iter()
         .enumerate()
         .map(|(i, &v)| BarItem {
-            label: format!("C{}", i),
+            label: format!("C{i}"),
             frac: v / 100.0,
-            value: format!("{:.0}%", v),
+            value: format!("{v:.0}%"),
             color: get_gradient_color(v),
         })
         .collect();
@@ -620,9 +619,10 @@ fn render_bars(f: &mut Frame, app: &App, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let items = &bar_items(app);
     const VALUE_W: usize = 11; // fits "30.0/48.0G"
     const LABEL_W: usize = 4;
+
+    let items = &bar_items(app);
     let cols: usize = if area.width >= 80 { 2 } else { 1 };
     let rows = items.len().div_ceil(cols).max(1);
     let col_w = (area.width as usize) / cols;
@@ -956,22 +956,33 @@ fn render_help_popup(f: &mut Frame, _app: &App) {
 /// indistinguishable from a genuine zero reading.
 fn format_metric(value: Option<f32>, width: usize) -> String {
     match value {
-        Some(v) => format!("{:>1$.1}", v, width),
+        Some(v) => format!("{v:>width$.1}"),
         None => format!("{:>1$}", "—", width),
     }
 }
 
+/// Truncate to `max_len` columns, counting characters rather than bytes: a
+/// non-ASCII username sliced on a byte boundary panics, and its byte length
+/// overstates how wide it renders.
 fn truncate_string(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}...", &s[..max_len.saturating_sub(3)])
+    if s.chars().count() <= max_len {
+        return s.to_string();
     }
+    let kept: String = s.chars().take(max_len.saturating_sub(3)).collect();
+    format!("{kept}...")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Usernames are not all ASCII, and byte-slicing one mid-codepoint panics.
+    #[test]
+    fn test_truncate_string_counts_characters_not_bytes() {
+        assert_eq!(truncate_string("ärlig", 8), "ärlig");
+        assert_eq!(truncate_string("ärligtalad", 8), "ärlig...");
+        assert_eq!(truncate_string("日本語のユーザー名", 8), "日本語のユ...");
+    }
 
     #[test]
     fn test_unavailable_metric_is_not_rendered_as_zero() {
@@ -989,7 +1000,7 @@ mod tests {
         // Both branches occupy the same number of terminal columns, so the
         // table stays aligned. Note: chars(), not len() — the em dash is 3 bytes.
         for value in [None, Some(0.0), Some(100.0)] {
-            assert_eq!(format_metric(value, 6).chars().count(), 6, "{:?}", value);
+            assert_eq!(format_metric(value, 6).chars().count(), 6, "{value:?}");
         }
     }
 
@@ -1019,7 +1030,7 @@ mod tests {
         assert_eq!(hori_bar(-0.2, 10), "·".repeat(10));
         // Always exactly `width` chars.
         for frac in [0.0f32, 0.1, 0.5, 0.99, 1.0] {
-            assert_eq!(hori_bar(frac, 18).chars().count(), 18, "{}", frac);
+            assert_eq!(hori_bar(frac, 18).chars().count(), 18, "{frac}");
         }
     }
 
