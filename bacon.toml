@@ -1,0 +1,14 @@
+default_job = "clippy-all"
+
+[jobs.check]
+command = ["cargo", "check", "--color", "always"]
+
+[jobs.clippy-all]
+command = ["cargo", "clippy", "--all-targets", "--color", "always"]
+
+[jobs.test]
+command = ["cargo", "nextest", "run", "--color", "always"]
+
+[keybindings]
+c = "job:clippy-all"
+t = "job:test"

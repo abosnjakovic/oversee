@@ -42,9 +42,9 @@ help:
 	@echo "  make debug-homebrew  - Debug Homebrew formula issues"
 	@echo ""
 	@echo "$(GREEN)Development:$(NC)"
+	@echo "  make watch           - Watch for changes: clippy + nextest"
 	@echo "  make lint            - cargo fmt + clippy --all-targets -D warnings"
-	@echo "  make test            - cargo test"
-	@echo "  make doc             - cargo doc --no-deps -D rustdoc warnings"
+	@echo "  make test            - cargo nextest run"
 	@echo ""
 	@echo "$(GREEN)Utilities:$(NC)"
 	@echo "  make clean           - Clean build artifacts"
@@ -155,7 +155,12 @@ lint:
 # Test - run unit and integration tests
 .PHONY: test
 test:
-	cargo test
+	cargo nextest run
+
+# Watch - re-run clippy + nextest on file changes
+.PHONY: watch
+watch:
+	watchexec -e rs,toml --clear "cargo clippy --all-targets --color always && cargo nextest run --color always"
 
 # Perf - measure idle CPU and capture a samply baseline.
 # Re-run after any change; results land in perf/baseline/.
