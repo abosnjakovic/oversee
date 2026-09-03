@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::CStr;
 #[cfg(feature = "profile")]
 use std::fs::OpenOptions;
@@ -292,15 +292,22 @@ pub struct ProcessMonitor {
     sort_mode: SortMode,
     /// Cache UID -> username mappings to avoid repeated FFI calls
     uid_cache: HashMap<u32, String>,
-    /// Ports from the last lsof scan, keyed by pid. Reused on refreshes that
-    /// skip lsof so ports don't blink out of the table between scans.
-    /// ponytail: entries for dead pids linger until the next scan, so a pid
-    /// recycled within the scan interval shows the old process's ports. Prune
-    /// against the live pid set if that ever bites.
-    port_cache: HashMap<u32, Vec<PortInfo>>,
-    /// Pids that existed at the last lsof scan. A live pid outside this set has
-    /// unknown ports, which is what triggers an early rescan.
-    scanned_pids: HashSet<u32>,
+    /// What the last lsof scan saw, keyed by pid: the start time of the process
+    /// it saw there, and the ports it found (empty for processes with none).
+    /// Reused on refreshes that skip lsof so ports don't blink out of the table
+    /// between scans. The start time is the process's identity: a pid recycled
+    /// since the scan fails the match, so it inherits no ports and counts as
+    /// unscanned, which brings the next scan forward.
+    last_scan: HashMap<u32, ScannedProcess>,
+}
+
+/// One process as the last lsof scan saw it.
+#[derive(Debug, Clone)]
+struct ScannedProcess {
+    /// Process start time, in seconds since the epoch. Distinguishes a live pid
+    /// from a dead one whose number has been handed to something else.
+    start_time: u64,
+    ports: Vec<PortInfo>,
 }
 
 impl ProcessMonitor {
@@ -327,8 +334,7 @@ impl ProcessMonitor {
             processes: Vec::new(),
             sort_mode: SortMode::Cpu,
             uid_cache: HashMap::new(),
-            port_cache: HashMap::new(),
-            scanned_pids: HashSet::new(),
+            last_scan: HashMap::new(),
         }
     }
 
@@ -371,9 +377,40 @@ impl ProcessMonitor {
         // schedule and cached. Refreshes in between reuse the cache rather than
         // reporting no ports, which would make ports flicker in the table.
         if include_ports {
-            self.port_cache = get_process_ports();
-            self.scanned_pids = self.system.processes().keys().map(|p| p.as_u32()).collect();
+            let mut found = get_process_ports();
+            self.last_scan = self
+                .system
+                .processes()
+                .iter()
+                .map(|(pid, process)| {
+                    let pid = pid.as_u32();
+                    let scanned = ScannedProcess {
+                        start_time: process.start_time(),
+                        ports: found.remove(&pid).unwrap_or_default(),
+                    };
+                    (pid, scanned)
+                })
+                .collect();
         }
+
+        // A process the last scan never saw, or one that has taken over a pid
+        // since, has unknown ports. Tell the caller so it can rescan sooner.
+        let unscanned = self.system.processes().iter().any(|(pid, process)| {
+            !self
+                .last_scan
+                .get(&pid.as_u32())
+                .is_some_and(|scanned| scanned.start_time == process.start_time())
+        });
+
+        // Hoisted out of the closure below so it borrows only this field,
+        // leaving `uid_cache` free to be borrowed mutably alongside it.
+        let last_scan = &self.last_scan;
+        let ports_for = |pid: u32, start_time: u64| {
+            last_scan
+                .get(&pid)
+                .filter(|scanned| scanned.start_time == start_time)
+                .map_or_else(Vec::new, |scanned| scanned.ports.clone())
+        };
 
         // On cpu-only refreshes we can reuse the previously-built ProcessInfo
         // for each pid and just mutate its CPU/GPU fields. This skips the
@@ -400,11 +437,7 @@ impl ProcessMonitor {
                 // build below so they get a complete record.
                 if !full_refresh && let Some(mut existing) = prev.remove(&process_pid) {
                     existing.cpu_usage = process.cpu_usage();
-                    existing.ports = self
-                        .port_cache
-                        .get(&process_pid)
-                        .cloned()
-                        .unwrap_or_default();
+                    existing.ports = ports_for(process_pid, process.start_time());
                     return existing;
                 }
 
@@ -448,11 +481,7 @@ impl ProcessMonitor {
                     "unknown".to_string()
                 };
 
-                let ports = self
-                    .port_cache
-                    .get(&process_pid)
-                    .cloned()
-                    .unwrap_or_default();
+                let ports = ports_for(process_pid, process.start_time());
 
                 let cwd = process.cwd().map(|p| p.to_string_lossy().into_owned());
                 let exe = process.exe().map(|p| p.to_string_lossy().into_owned());
@@ -482,9 +511,7 @@ impl ProcessMonitor {
         // // Limit to top 300 processes for performance
         // self.processes.truncate(300);
 
-        self.processes
-            .iter()
-            .any(|p| !self.scanned_pids.contains(&p.pid))
+        unscanned
     }
 
     fn sort_processes(&mut self) {
@@ -556,6 +583,7 @@ fn get_username_from_uid(_uid: u32) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sysinfo::Pid;
 
     fn listening_on(port: u16) -> PortInfo {
         PortInfo {
@@ -567,27 +595,67 @@ mod tests {
         }
     }
 
+    /// Start time of this test process, as sysinfo reports it.
+    fn own_start_time(monitor: &ProcessMonitor) -> u64 {
+        monitor
+            .system
+            .process(Pid::from_u32(std::process::id()))
+            .expect("test process should be in the process list")
+            .start_time()
+    }
+
+    fn seed_scan(monitor: &mut ProcessMonitor, start_time: u64, ports: Vec<PortInfo>) {
+        monitor
+            .last_scan
+            .insert(std::process::id(), ScannedProcess { start_time, ports });
+    }
+
+    fn own_ports(monitor: &ProcessMonitor) -> Vec<u16> {
+        monitor
+            .get_processes()
+            .iter()
+            .find(|p| p.pid == std::process::id())
+            .expect("test process should be in the process list")
+            .ports
+            .iter()
+            .map(|p| p.port)
+            .collect()
+    }
+
     /// Refreshes that skip lsof used to rebuild every process with no ports,
     /// so a listening port blinked out of the table between scans.
     #[test]
     fn ports_survive_a_refresh_that_skips_lsof() {
         let mut monitor = ProcessMonitor::new();
-        let pid = std::process::id();
-        monitor.port_cache.insert(pid, vec![listening_on(4242)]);
+        let started = own_start_time(&monitor);
 
         for (include_ports, full_refresh) in [(false, true), (false, false)] {
+            seed_scan(&mut monitor, started, vec![listening_on(4242)]);
             monitor.refresh(include_ports, full_refresh);
-            let me = monitor
-                .get_processes()
-                .iter()
-                .find(|p| p.pid == pid)
-                .expect("test process should be in the process list");
             assert_eq!(
-                me.ports.iter().map(|p| p.port).collect::<Vec<_>>(),
+                own_ports(&monitor),
                 vec![4242],
                 "refresh({include_ports}, {full_refresh}) dropped cached ports"
             );
         }
+    }
+
+    /// Pids are recycled. Serving the previous occupant's ports would attribute
+    /// a port to a process that never opened it, which is worse than showing
+    /// none until the next scan.
+    #[test]
+    fn a_recycled_pid_does_not_inherit_the_previous_process_ports() {
+        let mut monitor = ProcessMonitor::new();
+        let started = own_start_time(&monitor);
+        seed_scan(&mut monitor, started - 1, vec![listening_on(4242)]);
+
+        let unscanned = monitor.refresh(false, true);
+
+        assert!(own_ports(&monitor).is_empty(), "stale ports were served");
+        assert!(
+            unscanned,
+            "a pid whose start time moved must be reported as unscanned"
+        );
     }
 
     /// A process the last scan never saw has unknown ports, so the caller is
@@ -600,7 +668,20 @@ mod tests {
             "no scan has run yet, so every live pid is unscanned"
         );
 
-        monitor.scanned_pids = monitor.processes.iter().map(|p| p.pid).collect();
+        monitor.last_scan = monitor
+            .system
+            .processes()
+            .iter()
+            .map(|(pid, process)| {
+                (
+                    pid.as_u32(),
+                    ScannedProcess {
+                        start_time: process.start_time(),
+                        ports: Vec::new(),
+                    },
+                )
+            })
+            .collect();
         assert!(
             !monitor.refresh(false, false),
             "every live pid was covered by the last scan"
