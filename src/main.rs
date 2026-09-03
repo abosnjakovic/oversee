@@ -127,6 +127,21 @@ fn main() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+/// Base interval between lsof port scans.
+const PORT_SCAN_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Floor between port scans when a process the last scan never saw is running.
+/// Without it, the short-lived processes macOS spawns constantly would drag
+/// lsof back to every tick and undo the point of caching.
+const PORT_RESCAN_DEBOUNCE: Duration = Duration::from_secs(5);
+
+/// lsof is expensive, so ports are scanned on a long interval and cached in
+/// between. A process that appeared after the last scan has unknown ports, so
+/// it brings the next scan forward instead of waiting out the full interval.
+fn should_scan_ports(port_age: Duration, unscanned_pids: bool) -> bool {
+    port_age >= PORT_SCAN_INTERVAL || (unscanned_pids && port_age >= PORT_RESCAN_DEBOUNCE)
+}
+
 fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataCommand>) {
     use crate::cpu::CpuMonitor;
     use crate::gpu::GpuMonitor;
@@ -140,7 +155,8 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
 
     let mut paused = false;
     let mut last_update = Instant::now() - Duration::from_secs(10); // Force immediate update
-    let mut last_port_update = Instant::now() - Duration::from_secs(10);
+    let mut last_port_update = Instant::now() - PORT_SCAN_INTERVAL;
+    let mut unscanned_pids = false;
     let mut last_full_process_refresh = Instant::now() - Duration::from_secs(10); // Force immediate full refresh
 
     loop {
@@ -176,27 +192,28 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
                 let mem_info = memory_monitor.get_memory_info();
 
                 // Processes: CPU-only refresh every 2 seconds, full refresh every 10 seconds.
-                // Port refresh every 15 seconds (lsof is expensive).
-                let include_ports = now.duration_since(last_port_update) >= Duration::from_secs(15);
+                // Ports come from the monitor's cache in between scans.
+                let include_ports =
+                    should_scan_ports(now.duration_since(last_port_update), unscanned_pids);
                 let full_refresh =
                     now.duration_since(last_full_process_refresh) >= Duration::from_secs(10);
 
-                if include_ports {
+                unscanned_pids = if include_ports {
+                    last_port_update = now;
+                    last_full_process_refresh = now;
                     profile!(
                         "process_refresh_with_ports",
                         process_monitor.refresh(true, true)
-                    );
-                    last_port_update = now;
-                    last_full_process_refresh = now;
+                    )
                 } else if full_refresh {
-                    profile!("process_refresh_full", process_monitor.refresh(false, true));
                     last_full_process_refresh = now;
+                    profile!("process_refresh_full", process_monitor.refresh(false, true))
                 } else {
                     profile!(
                         "process_refresh_cpu_only",
                         process_monitor.refresh(false, false)
-                    );
-                }
+                    )
+                };
 
                 // Send incremental updates (only new values, not full histories)
                 #[cfg(feature = "profile")]
@@ -237,5 +254,26 @@ fn run_data_collector(tx: mpsc::Sender<DataUpdate>, rx: mpsc::Receiver<DataComma
 
         // Sleep to avoid busy-waiting
         thread::sleep(Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn port_scan_waits_out_the_interval_when_nothing_new_appeared() {
+        assert!(!should_scan_ports(Duration::from_secs(29), false));
+        assert!(should_scan_ports(PORT_SCAN_INTERVAL, false));
+    }
+
+    #[test]
+    fn a_new_process_pulls_the_scan_forward_but_not_to_every_tick() {
+        // A dev server that just started should not wait out the full interval
+        // for its port to show up...
+        assert!(should_scan_ports(PORT_RESCAN_DEBOUNCE, true));
+        // ...but the churn of short-lived processes must not run lsof on every
+        // 2-second tick.
+        assert!(!should_scan_ports(Duration::from_secs(2), true));
     }
 }

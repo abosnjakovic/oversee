@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::CStr;
 #[cfg(feature = "profile")]
 use std::fs::OpenOptions;
@@ -292,6 +292,15 @@ pub struct ProcessMonitor {
     sort_mode: SortMode,
     /// Cache UID -> username mappings to avoid repeated FFI calls
     uid_cache: HashMap<u32, String>,
+    /// Ports from the last lsof scan, keyed by pid. Reused on refreshes that
+    /// skip lsof so ports don't blink out of the table between scans.
+    /// ponytail: entries for dead pids linger until the next scan, so a pid
+    /// recycled within the scan interval shows the old process's ports. Prune
+    /// against the live pid set if that ever bites.
+    port_cache: HashMap<u32, Vec<PortInfo>>,
+    /// Pids that existed at the last lsof scan. A live pid outside this set has
+    /// unknown ports, which is what triggers an early rescan.
+    scanned_pids: HashSet<u32>,
 }
 
 impl ProcessMonitor {
@@ -318,13 +327,18 @@ impl ProcessMonitor {
             processes: Vec::new(),
             sort_mode: SortMode::Cpu,
             uid_cache: HashMap::new(),
+            port_cache: HashMap::new(),
+            scanned_pids: HashSet::new(),
         }
     }
 
     /// Refresh process information.
     /// - `include_ports`: Whether to run lsof to get port information (expensive)
     /// - `full_refresh`: If true, refresh memory/user/cmd info; if false, only refresh CPU usage
-    pub fn refresh(&mut self, include_ports: bool, full_refresh: bool) {
+    ///
+    /// Returns true when a live process was not covered by the last port scan,
+    /// so the caller can bring the next scan forward.
+    pub fn refresh(&mut self, include_ports: bool, full_refresh: bool) -> bool {
         // Refresh process information
         #[cfg(feature = "profile")]
         let sysinfo_start = Instant::now();
@@ -353,12 +367,13 @@ impl ProcessMonitor {
             sysinfo_start.elapsed().as_millis(),
         );
 
-        // Get port information for all processes (expensive operation - only when requested)
-        let port_map = if include_ports {
-            get_process_ports()
-        } else {
-            HashMap::new()
-        };
+        // Port information is expensive (lsof), so it is scanned on its own
+        // schedule and cached. Refreshes in between reuse the cache rather than
+        // reporting no ports, which would make ports flicker in the table.
+        if include_ports {
+            self.port_cache = get_process_ports();
+            self.scanned_pids = self.system.processes().keys().map(|p| p.as_u32()).collect();
+        }
 
         // On cpu-only refreshes we can reuse the previously-built ProcessInfo
         // for each pid and just mutate its CPU/GPU fields. This skips the
@@ -385,6 +400,11 @@ impl ProcessMonitor {
                 // build below so they get a complete record.
                 if !full_refresh && let Some(mut existing) = prev.remove(&process_pid) {
                     existing.cpu_usage = process.cpu_usage();
+                    existing.ports = self
+                        .port_cache
+                        .get(&process_pid)
+                        .cloned()
+                        .unwrap_or_default();
                     return existing;
                 }
 
@@ -428,7 +448,11 @@ impl ProcessMonitor {
                     "unknown".to_string()
                 };
 
-                let ports = port_map.get(&process_pid).cloned().unwrap_or_default();
+                let ports = self
+                    .port_cache
+                    .get(&process_pid)
+                    .cloned()
+                    .unwrap_or_default();
 
                 let cwd = process.cwd().map(|p| p.to_string_lossy().into_owned());
                 let exe = process.exe().map(|p| p.to_string_lossy().into_owned());
@@ -457,6 +481,10 @@ impl ProcessMonitor {
 
         // // Limit to top 300 processes for performance
         // self.processes.truncate(300);
+
+        self.processes
+            .iter()
+            .any(|p| !self.scanned_pids.contains(&p.pid))
     }
 
     fn sort_processes(&mut self) {
@@ -523,4 +551,59 @@ fn get_username_from_uid(uid: u32) -> Option<String> {
 #[cfg(not(target_os = "macos"))]
 fn get_username_from_uid(_uid: u32) -> Option<String> {
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn listening_on(port: u16) -> PortInfo {
+        PortInfo {
+            port,
+            protocol: Protocol::Tcp,
+            state: ConnectionState::Listen,
+            local_address: Some(format!("*:{port}")),
+            remote_address: None,
+        }
+    }
+
+    /// Refreshes that skip lsof used to rebuild every process with no ports,
+    /// so a listening port blinked out of the table between scans.
+    #[test]
+    fn ports_survive_a_refresh_that_skips_lsof() {
+        let mut monitor = ProcessMonitor::new();
+        let pid = std::process::id();
+        monitor.port_cache.insert(pid, vec![listening_on(4242)]);
+
+        for (include_ports, full_refresh) in [(false, true), (false, false)] {
+            monitor.refresh(include_ports, full_refresh);
+            let me = monitor
+                .get_processes()
+                .iter()
+                .find(|p| p.pid == pid)
+                .expect("test process should be in the process list");
+            assert_eq!(
+                me.ports.iter().map(|p| p.port).collect::<Vec<_>>(),
+                vec![4242],
+                "refresh({include_ports}, {full_refresh}) dropped cached ports"
+            );
+        }
+    }
+
+    /// A process the last scan never saw has unknown ports, so the caller is
+    /// told to bring the next scan forward.
+    #[test]
+    fn unscanned_pids_are_reported_to_the_caller() {
+        let mut monitor = ProcessMonitor::new();
+        assert!(
+            monitor.refresh(false, true),
+            "no scan has run yet, so every live pid is unscanned"
+        );
+
+        monitor.scanned_pids = monitor.processes.iter().map(|p| p.pid).collect();
+        assert!(
+            !monitor.refresh(false, false),
+            "every live pid was covered by the last scan"
+        );
+    }
 }
