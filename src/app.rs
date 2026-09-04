@@ -1,3 +1,4 @@
+use crate::category::Category;
 use crate::gpu::GpuMonitor;
 use crate::memory::MemoryInfo;
 use crate::process::{ProcessDetails, ProcessInfo, SortMode, fetch_process_details};
@@ -121,7 +122,7 @@ impl App {
             kill_target_name: String::new(),
             needs_clear: false,
             pinned_pids: HashSet::new(),
-            sort_mode: SortMode::Cpu,
+            sort_mode: SortMode::Name,
 
             expanded_pid: None,
             selected_details: None,
@@ -457,6 +458,9 @@ impl App {
                         || proc.user.to_lowercase().contains(&filter_lower)
                         || proc.pid.to_string().contains(&filter_lower)
                         || proc
+                            .category
+                            .is_some_and(|c| c.as_str().contains(&filter_lower))
+                        || proc
                             .ports
                             .iter()
                             .any(|port| port.port.to_string().contains(&filter_lower))
@@ -485,15 +489,25 @@ impl App {
                     .collect()
             };
 
-        if !self.pinned_pids.is_empty() {
-            processes.sort_by(|a, b| {
-                let a_pinned = self.pinned_pids.contains(&a.pid);
-                let b_pinned = self.pinned_pids.contains(&b.pid);
-                b_pinned.cmp(&a_pinned)
-            });
+        // Pinning is explicit and outranks the automatic tier. The sort is
+        // stable, so the collector's ordering survives inside every group.
+        let tiering = matches!(self.sort_mode, SortMode::Name);
+        if tiering || !self.pinned_pids.is_empty() {
+            processes
+                .sort_by_cached_key(|p| (!self.pinned_pids.contains(&p.pid), self.tier_rank(p)));
         }
 
         processes
+    }
+
+    /// Rank within the dev tier: categories in declaration order, everything
+    /// else after them. A constant under every sort mode but COMMAND, so the
+    /// CPU, MEM and PID sorts stay pure rankings.
+    fn tier_rank(&self, proc: &ProcessInfo) -> usize {
+        if !matches!(self.sort_mode, SortMode::Name) {
+            return 0;
+        }
+        proc.category.map_or(usize::MAX, Category::rank)
     }
 }
 
@@ -554,5 +568,112 @@ mod tests {
 
         app.apply_event(&key(KeyCode::Char('q')));
         assert!(!app.is_running());
+    }
+
+    fn dev_process(pid: u32, cmd: &str) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            name: cmd.to_string(),
+            cmd: cmd.to_string(),
+            user: "adam".to_string(),
+            cpu_usage: 0.0,
+            gpu_usage: None,
+            memory: 0,
+            ports: Vec::new(),
+            category: crate::category::classify(cmd, cmd),
+            cwd: None,
+            exe: None,
+            run_time: 0,
+            thread_count: 0,
+        }
+    }
+
+    fn app_with(processes: Vec<ProcessInfo>) -> App {
+        let (tx, _rx) = mpsc::channel();
+        let mut app = App::new(tx);
+        app.processes = processes;
+        app
+    }
+
+    fn cmds(app: &App) -> Vec<String> {
+        app.get_filtered_processes()
+            .iter()
+            .map(|p| p.cmd.clone())
+            .collect()
+    }
+
+    /// The whole point: an idle agent outranks a busy unclassified process, and
+    /// the categories keep their declared order regardless of input order.
+    #[test]
+    fn command_sort_groups_dev_processes_by_category() {
+        let app = app_with(vec![
+            dev_process(1, "WindowServer"),
+            dev_process(2, "docker"),
+            dev_process(3, "nvim"),
+            dev_process(4, "claude"),
+            dev_process(5, "postgres"),
+            dev_process(6, "aardvark"),
+        ]);
+
+        assert_eq!(
+            cmds(&app),
+            vec![
+                "claude",
+                "nvim",
+                "postgres",
+                "docker",
+                "WindowServer",
+                "aardvark"
+            ],
+            "agent, editor, database, container, then the untiered rest"
+        );
+    }
+
+    /// The tier must be inert under the other sorts, or the CPU ranking stops
+    /// answering "what is eating my CPU".
+    #[test]
+    fn the_tier_is_inert_under_other_sorts() {
+        let mut app = app_with(vec![
+            dev_process(1, "WindowServer"),
+            dev_process(2, "claude"),
+        ]);
+        app.sort_mode = SortMode::Cpu;
+
+        assert_eq!(
+            cmds(&app),
+            vec!["WindowServer", "claude"],
+            "input order must survive; the collector owns CPU ordering"
+        );
+    }
+
+    /// Pinning is an explicit act by the user and outranks the automatic tier.
+    #[test]
+    fn pinned_processes_float_above_the_dev_tier() {
+        let mut app = app_with(vec![
+            dev_process(1, "WindowServer"),
+            dev_process(2, "claude"),
+        ]);
+        app.pinned_pids.insert(1);
+
+        assert_eq!(cmds(&app), vec!["WindowServer", "claude"]);
+    }
+
+    /// Typing a category name is how the categories are discoverable without a
+    /// legend on screen.
+    #[test]
+    fn filter_matches_the_category_name() {
+        let mut app = app_with(vec![dev_process(1, "nvim"), dev_process(2, "claude")]);
+        app.filter_input = "agent".to_string();
+        app.update_filtered_indices();
+
+        assert_eq!(cmds(&app), vec!["claude"]);
+    }
+
+    /// The COMMAND sort is the only mode that groups, so it is the default.
+    #[test]
+    fn command_is_the_default_sort() {
+        let (tx, _rx) = mpsc::channel();
+        let app = App::new(tx);
+        assert!(matches!(app.get_sort_mode(), SortMode::Name));
     }
 }
