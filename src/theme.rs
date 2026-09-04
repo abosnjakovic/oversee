@@ -12,6 +12,11 @@ pub struct Theme {
     pub accent_warn: Color,
     pub accent_crit: Color,
 
+    /// Dev-tool category glyphs. One colour for all six, so they read as a
+    /// single class of marker; the glyph shape says which category. Kept clear
+    /// of cpu/gpu/mem, which already mean something in the bars above.
+    pub category: Color,
+
     pub fg: Color,
     pub fg_dim: Color,
     pub fg_faint: Color,
@@ -27,6 +32,8 @@ pub const THEME: Theme = Theme {
 
     accent_warn: Color::Yellow,
     accent_crit: Color::Red,
+
+    category: Color::Blue,
 
     fg: Color::White,
     fg_dim: Color::Gray,

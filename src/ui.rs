@@ -1,4 +1,5 @@
 use crate::app::{App, Mode};
+use crate::category::Category;
 use crate::convert::{bytes_to_f64, count_to_f32, to_count, to_f32};
 use crate::process::{ConnectionState, PortInfo, ProcessDetails, ProcessInfo, SortMode};
 use crate::theme::THEME;
@@ -318,6 +319,21 @@ fn process_table_header(sort_mode: SortMode) -> Row<'static> {
     .height(1)
 }
 
+/// The COMMAND cell's first line: a category glyph, or two columns of padding
+/// so untiered rows keep their command text aligned with the tiered ones.
+fn cmd_line(category: Option<Category>, text: String) -> Line<'static> {
+    let prefix = category.map_or_else(
+        || Span::raw("  "),
+        |c| {
+            Span::styled(
+                format!("{} ", c.glyph()),
+                Style::default().fg(THEME.category),
+            )
+        },
+    );
+    Line::from(vec![prefix, Span::raw(text)])
+}
+
 /// One table row for a process: the collapsed single line, or the expanded
 /// form with its breakout lines underneath.
 fn process_row(app: &App, i: usize, proc: &ProcessInfo, cmd_col_width: usize) -> Row<'static> {
@@ -368,7 +384,7 @@ fn process_row(app: &App, i: usize, proc: &ProcessInfo, cmd_col_width: usize) ->
     ));
 
     if is_expanded {
-        let mut cmd_lines: Vec<Line> = vec![Line::from(cmd_display)];
+        let mut cmd_lines: Vec<Line> = vec![cmd_line(proc.category, cmd_display)];
         cmd_lines.extend(build_breakout_lines(
             proc,
             app.selected_details.as_ref(),
@@ -394,7 +410,7 @@ fn process_row(app: &App, i: usize, proc: &ProcessInfo, cmd_col_width: usize) ->
             metric_cell(proc.gpu_usage, THEME.gpu, 6),
             Cell::from(format_ports(&proc.ports)),
             mem_cell,
-            Cell::from(cmd_display),
+            Cell::from(cmd_line(proc.category, cmd_display)),
         ])
         .style(row_style)
     }
@@ -416,8 +432,9 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
     let header = process_table_header(app.get_sort_mode());
 
     // Width available for the Command column's wrapped breakout content.
-    // Fixed cols total 8+8+6+6+12+7 = 47, plus 6 column spacings, plus 2 for highlight symbol.
-    let cmd_col_width = usize::from(table_and_title.width).saturating_sub(47 + 6 + 2);
+    // Fixed cols total 8+8+6+6+12+7 = 47, plus 6 column spacings, plus 2 for the
+    // highlight symbol, plus 2 for the category glyph prefix.
+    let cmd_col_width = usize::from(table_and_title.width).saturating_sub(47 + 6 + 2 + 2);
 
     // Process rows
     let rows: Vec<Row> = processes
@@ -1088,5 +1105,26 @@ mod tests {
             mk(83, ConnectionState::Established),
         ];
         assert_eq!(format_ports(&many), "80,81,82...");
+    }
+
+    /// The prefix must occupy the same width whether or not a process is a dev
+    /// tool, or command text stops aligning down the table.
+    #[test]
+    fn cmd_line_prefix_is_two_columns_either_way() {
+        let tiered = cmd_line(Some(Category::Agent), "claude".to_string());
+        let plain = cmd_line(None, "claude".to_string());
+
+        assert_eq!(tiered.width(), plain.width());
+        assert_eq!(plain.width(), "  claude".chars().count());
+    }
+
+    /// The glyph identifies the category at a glance under every sort mode, not
+    /// only the one that groups.
+    #[test]
+    fn cmd_line_shows_the_category_glyph() {
+        let line = cmd_line(Some(Category::Server), "next dev".to_string());
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+
+        assert_eq!(rendered, "▸ next dev");
     }
 }
