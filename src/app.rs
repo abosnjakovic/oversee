@@ -453,18 +453,7 @@ impl App {
                 .processes
                 .iter()
                 .enumerate()
-                .filter(|(_, proc)| {
-                    proc.name.to_lowercase().contains(&filter_lower)
-                        || proc.user.to_lowercase().contains(&filter_lower)
-                        || proc.pid.to_string().contains(&filter_lower)
-                        || proc
-                            .category
-                            .is_some_and(|c| c.as_str().contains(&filter_lower))
-                        || proc
-                            .ports
-                            .iter()
-                            .any(|port| port.port.to_string().contains(&filter_lower))
-                })
+                .filter(|(_, proc)| Self::matches_filter(proc, &filter_lower))
                 .map(|(i, _)| i)
                 .collect();
         }
@@ -474,6 +463,29 @@ impl App {
             self.selected_process = 0;
             self.table_state.select(Some(0));
         }
+    }
+
+    /// Does this process match the filter?
+    ///
+    /// A leading colon searches categories only. A bare word searches every
+    /// field, which meant `/agent` also matched the sixty-odd macOS daemons
+    /// named `*Agent` — so `:agent` is how you ask for the dev tier itself.
+    fn matches_filter(proc: &ProcessInfo, filter: &str) -> bool {
+        if let Some(wanted) = filter.strip_prefix(':') {
+            // An empty prefix would match every category, so a bare `:` must not.
+            return !wanted.is_empty()
+                && proc
+                    .category
+                    .is_some_and(|c| c.as_str().starts_with(wanted));
+        }
+        proc.name.to_lowercase().contains(filter)
+            || proc.user.to_lowercase().contains(filter)
+            || proc.pid.to_string().contains(filter)
+            || proc.category.is_some_and(|c| c.as_str().contains(filter))
+            || proc
+                .ports
+                .iter()
+                .any(|port| port.port.to_string().contains(filter))
     }
 
     pub fn get_filtered_processes(&self) -> Vec<&ProcessInfo> {
@@ -667,6 +679,65 @@ mod tests {
         app.update_filtered_indices();
 
         assert_eq!(cmds(&app), vec!["claude"]);
+    }
+
+    /// A bare word searches everything, so /agent also matched the ~64 macOS
+    /// daemons named *Agent. A leading colon searches categories only.
+    #[test]
+    fn a_colon_prefix_searches_categories_only() {
+        let mut app = app_with(vec![
+            dev_process(1, "claude"),
+            dev_process(2, "PasswordBreachAgent"),
+            dev_process(3, "nvim"),
+        ]);
+
+        app.filter_input = "agent".to_string();
+        app.update_filtered_indices();
+        assert_eq!(
+            cmds(&app),
+            vec!["claude", "PasswordBreachAgent"],
+            "a bare word still searches names too"
+        );
+
+        app.filter_input = ":agent".to_string();
+        app.update_filtered_indices();
+        assert_eq!(cmds(&app), vec!["claude"], "the daemon is not an agent");
+    }
+
+    /// A colon on its own, or one naming no category, must not silently match
+    /// everything — an empty prefix would.
+    #[test]
+    fn a_colon_matching_no_category_shows_nothing() {
+        let mut app = app_with(vec![dev_process(1, "claude"), dev_process(2, "nvim")]);
+
+        app.filter_input = ":".to_string();
+        app.update_filtered_indices();
+        assert!(cmds(&app).is_empty(), "a bare colon names no category");
+
+        app.filter_input = ":nonsense".to_string();
+        app.update_filtered_indices();
+        assert!(cmds(&app).is_empty());
+    }
+
+    /// `tier_rank`'s early return is only reached when something is pinned AND
+    /// the sort is not COMMAND — otherwise the outer gate short-circuits and
+    /// the sort never runs, so `the_tier_is_inert_under_other_sorts` passes
+    /// without ever calling it.
+    #[test]
+    fn a_pin_does_not_tier_the_rest_under_other_sorts() {
+        let mut app = app_with(vec![
+            dev_process(1, "WindowServer"),
+            dev_process(2, "claude"),
+            dev_process(3, "aardvark"),
+        ]);
+        app.sort_mode = SortMode::Cpu;
+        app.pinned_pids.insert(3);
+
+        assert_eq!(
+            cmds(&app),
+            vec!["aardvark", "WindowServer", "claude"],
+            "the pin floats, but claude must not be tiered above WindowServer"
+        );
     }
 
     /// The COMMAND sort is the only mode that groups, so it is the default.
