@@ -141,7 +141,9 @@ fn fetch_thread_count_macos(_pid: u32) -> Option<u32> {
 pub enum SortMode {
     Cpu,
     Memory,
-    Name,
+    /// Alphabetical by the full command line — what the COMMAND column shows,
+    /// and the only mode that groups dev tools into the tier at the top.
+    Command,
     Pid,
 }
 
@@ -149,8 +151,8 @@ impl SortMode {
     pub const fn next(self) -> Self {
         match self {
             Self::Cpu => Self::Memory,
-            Self::Memory => Self::Name,
-            Self::Name => Self::Pid,
+            Self::Memory => Self::Command,
+            Self::Command => Self::Pid,
             Self::Pid => Self::Cpu,
         }
     }
@@ -350,7 +352,7 @@ impl ProcessMonitor {
             system,
             users,
             processes: Vec::new(),
-            sort_mode: SortMode::Name,
+            sort_mode: SortMode::Command,
             uid_cache: HashMap::new(),
             last_scan: HashMap::new(),
         }
@@ -527,9 +529,7 @@ impl ProcessMonitor {
             SortMode::Memory => {
                 self.processes.sort_by_key(|p| std::cmp::Reverse(p.memory));
             }
-            SortMode::Name => {
-                // By cmd, not name: the column is labelled COMMAND and displays
-                // cmd, so sorting by name filed every Node process under "node".
+            SortMode::Command => {
                 self.processes.sort_by(|a, b| a.cmd.cmp(&b.cmd));
             }
             SortMode::Pid => {
@@ -615,7 +615,7 @@ mod tests {
     #[test]
     fn command_sort_orders_by_cmd_not_name() {
         let mut monitor = ProcessMonitor::new();
-        monitor.sort_mode = SortMode::Name;
+        monitor.sort_mode = SortMode::Command;
         monitor.processes = vec![
             process_named(1, "node", "vite"),
             process_named(2, "node", "claude"),
@@ -633,7 +633,7 @@ mod tests {
     #[test]
     fn command_is_the_default_sort() {
         let monitor = ProcessMonitor::new();
-        assert!(matches!(monitor.sort_mode, SortMode::Name));
+        assert!(matches!(monitor.sort_mode, SortMode::Command));
     }
 
     fn listening_on(port: u16) -> PortInfo {

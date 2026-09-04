@@ -313,7 +313,7 @@ fn process_table_header(sort_mode: SortMode) -> Row<'static> {
         )),
         Cell::from(Span::styled(
             "COMMAND",
-            header_style_for(matches!(sort_mode, SortMode::Name)),
+            header_style_for(matches!(sort_mode, SortMode::Command)),
         )),
     ])
     .height(1)

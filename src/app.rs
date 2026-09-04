@@ -122,7 +122,7 @@ impl App {
             kill_target_name: String::new(),
             needs_clear: false,
             pinned_pids: HashSet::new(),
-            sort_mode: SortMode::Name,
+            sort_mode: SortMode::Command,
 
             expanded_pid: None,
             selected_details: None,
@@ -503,7 +503,7 @@ impl App {
 
         // Pinning is explicit and outranks the automatic tier. The sort is
         // stable, so the collector's ordering survives inside every group.
-        let tiering = matches!(self.sort_mode, SortMode::Name);
+        let tiering = matches!(self.sort_mode, SortMode::Command);
         if tiering || !self.pinned_pids.is_empty() {
             processes
                 .sort_by_cached_key(|p| (!self.pinned_pids.contains(&p.pid), self.tier_rank(p)));
@@ -516,7 +516,7 @@ impl App {
     /// else after them. A constant under every sort mode but COMMAND, so the
     /// CPU, MEM and PID sorts stay pure rankings.
     fn tier_rank(&self, proc: &ProcessInfo) -> usize {
-        if !matches!(self.sort_mode, SortMode::Name) {
+        if !matches!(self.sort_mode, SortMode::Command) {
             return 0;
         }
         proc.category.map_or(usize::MAX, Category::rank)
@@ -745,6 +745,6 @@ mod tests {
     fn command_is_the_default_sort() {
         let (tx, _rx) = mpsc::channel();
         let app = App::new(tx);
-        assert!(matches!(app.get_sort_mode(), SortMode::Name));
+        assert!(matches!(app.get_sort_mode(), SortMode::Command));
     }
 }
