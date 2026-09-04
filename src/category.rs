@@ -96,13 +96,41 @@ fn basename(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// The words that identify a process: its name, plus every argv token that is
-/// not a flag, each also reduced to its path basename so
+/// The words that identify a process: its name, the executable, and the first
+/// real argument, each also reduced to its path basename so
 /// `/opt/next/dist/bin/next` yields `next`.
+///
+/// Only the first two argv tokens are read, because later ones are the tool's
+/// arguments rather than the tool: scanning the whole line tagged
+/// `pip install flask` as a server and `brew install go` as a build tool.
 fn words<'a>(name: &'a str, cmd: &'a str) -> impl Iterator<Item = &'a str> {
     std::iter::once(name)
-        .chain(cmd.split_whitespace().filter(|t| !t.starts_with('-')))
+        .chain(argv(cmd).take(2))
         .flat_map(|token| [token, basename(token)])
+}
+
+/// The command line's tokens, less its flags.
+fn argv(cmd: &str) -> impl Iterator<Item = &str> {
+    cmd.split_whitespace().filter(|t| !t.starts_with('-'))
+}
+
+/// Dispatchers that only mean a server under one subcommand. `php artisan`
+/// serves under `serve` and opens a REPL under `tinker`; Django's `manage.py`
+/// serves under `runserver` and runs a test suite under `test`. Matching the
+/// dispatcher alone tagged both REPLs and migrations as servers.
+const SERVER_SUBCOMMANDS: &[(&str, &str)] = &[("artisan", "serve"), ("manage.py", "runserver")];
+
+/// True when `cmd` invokes `word` with `sub` as its next non-flag argument.
+fn runs_subcommand(cmd: &str, word: &str, sub: &str) -> bool {
+    let mut tokens = argv(cmd);
+    while let Some(token) = tokens.next() {
+        if basename(token).eq_ignore_ascii_case(word) {
+            return tokens
+                .next()
+                .is_some_and(|next| next.eq_ignore_ascii_case(sub));
+        }
+    }
+    false
 }
 
 /// Classify a process from its name and full argv. `None` for anything that is
@@ -114,6 +142,12 @@ fn words<'a>(name: &'a str, cmd: &'a str) -> impl Iterator<Item = &'a str> {
 pub fn classify(name: &str, cmd: &str) -> Option<Category> {
     if is_helper(name, cmd) {
         return None;
+    }
+    if SERVER_SUBCOMMANDS
+        .iter()
+        .any(|(word, sub)| runs_subcommand(cmd, word, sub))
+    {
+        return Some(Category::Server);
     }
     let words: Vec<&str> = words(name, cmd).collect();
     Category::ALL.into_iter().find(|category| {
@@ -151,7 +185,7 @@ const EDITOR: &[&str] = &[
     "helix",
     "hx",
     "subl",
-    "sublime_text",
+    "sublime text",
     "kak",
     "kakoune",
     "idea",
@@ -172,6 +206,7 @@ const SERVER: &[&str] = &[
     "nodemon",
     "webpack-dev-server",
     "http-server",
+    "http.server",
     "live-server",
     "serve",
     "rails",
@@ -179,13 +214,11 @@ const SERVER: &[&str] = &[
     "unicorn",
     "rack",
     "sinatra",
-    "manage.py",
     "flask",
     "uvicorn",
     "gunicorn",
     "hypercorn",
     "daphne",
-    "artisan",
     "nginx",
     "caddy",
     "httpd",
@@ -266,6 +299,61 @@ mod tests {
                 "{category:?} collides with the pin marker"
             );
         }
+    }
+
+    /// A package manager's ARGUMENT is not the tool being run. Scanning the whole
+    /// argv tagged `pip install flask` as a server and `brew install go` as a
+    /// build tool — the installed package's name collided with a table entry.
+    #[test]
+    fn a_package_manager_argument_is_not_the_tool() {
+        assert_eq!(classify("npm", "npm install eslint"), None);
+        assert_eq!(classify("pip", "pip install flask"), None);
+        assert_eq!(classify("pip3", "pip3 install uvicorn gunicorn"), None);
+        assert_eq!(classify("brew", "brew install go"), None);
+        assert_eq!(classify("cargo", "cargo add vite"), Some(Category::Build));
+    }
+
+    /// Restricting the word set must not cost a genuine detection: the tool is
+    /// still identified when it is the first real argument of a runtime.
+    #[test]
+    fn the_first_real_argument_still_identifies_the_tool() {
+        assert_eq!(
+            classify("node", "node /opt/next/dist/bin/next dev"),
+            Some(Category::Server)
+        );
+        assert_eq!(
+            classify("python3", "python3 -m uvicorn main:app --reload"),
+            Some(Category::Server)
+        );
+    }
+
+    /// `artisan` and `manage.py` are dispatchers, not servers. Only the
+    /// subcommand says whether one is serving traffic or opening a REPL.
+    #[test]
+    fn dispatchers_classify_on_their_subcommand() {
+        assert_eq!(classify("php", "php artisan serve"), Some(Category::Server));
+        assert_eq!(classify("php", "php artisan tinker"), None);
+        assert_eq!(classify("php", "php artisan migrate"), None);
+        assert_eq!(
+            classify("python", "python manage.py runserver 0.0.0.0:8000"),
+            Some(Category::Server)
+        );
+        assert_eq!(classify("python", "python manage.py test"), None);
+        assert_eq!(classify("python", "python manage.py migrate"), None);
+    }
+
+    /// Python's stdlib server module is `http.server`; the npm package is the
+    /// distinct word `http-server`. Both are common enough to want.
+    #[test]
+    fn the_python_stdlib_server_module_is_detected() {
+        assert_eq!(
+            classify("python3", "python3 -m http.server 8000"),
+            Some(Category::Server)
+        );
+        assert_eq!(
+            classify("node", "node http-server ."),
+            Some(Category::Server)
+        );
     }
 
     #[test]
