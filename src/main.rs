@@ -1,4 +1,5 @@
 mod app;
+mod category;
 mod convert;
 mod cpu;
 mod gpu;
