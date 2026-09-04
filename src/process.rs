@@ -1,3 +1,4 @@
+use crate::category::{Category, classify};
 use std::collections::HashMap;
 use std::ffi::CStr;
 #[cfg(feature = "profile")]
@@ -61,6 +62,9 @@ pub struct ProcessInfo {
     pub gpu_usage: Option<f32>,
     pub memory: u64,
     pub ports: Vec<PortInfo>,
+    /// Which kind of dev tool this is, if any. `None` means the process is not
+    /// a dev tool and stays out of the tier at the top of the table.
+    pub category: Option<Category>,
     pub cwd: Option<String>,
     pub exe: Option<String>,
     pub run_time: u64,
@@ -346,7 +350,7 @@ impl ProcessMonitor {
             system,
             users,
             processes: Vec::new(),
-            sort_mode: SortMode::Cpu,
+            sort_mode: SortMode::Name,
             uid_cache: HashMap::new(),
             last_scan: HashMap::new(),
         }
@@ -470,6 +474,11 @@ impl ProcessMonitor {
                     cmd_parts.join(" ")
                 };
 
+                // Classified here rather than in the UI: the CPU-only refresh
+                // reuses the whole ProcessInfo, so this runs on the 10-second
+                // full refresh and for new pids, not on every 2-second tick.
+                let category = classify(&name, &cmd);
+
                 let user = resolve_user(&mut self.uid_cache, &self.users, process);
 
                 let ports = ports_for(process_pid, process.start_time());
@@ -490,6 +499,7 @@ impl ProcessMonitor {
                     gpu_usage: None,
                     memory: process.memory(),
                     ports,
+                    category,
                     cwd,
                     exe,
                     run_time,
@@ -518,7 +528,9 @@ impl ProcessMonitor {
                 self.processes.sort_by_key(|p| std::cmp::Reverse(p.memory));
             }
             SortMode::Name => {
-                self.processes.sort_by(|a, b| a.name.cmp(&b.name));
+                // By cmd, not name: the column is labelled COMMAND and displays
+                // cmd, so sorting by name filed every Node process under "node".
+                self.processes.sort_by(|a, b| a.cmd.cmp(&b.cmd));
             }
             SortMode::Pid => {
                 self.processes.sort_by_key(|p| p.pid);
@@ -578,6 +590,51 @@ fn get_username_from_uid(_uid: u32) -> Option<String> {
 mod tests {
     use super::*;
     use sysinfo::Pid;
+
+    fn process_named(pid: u32, name: &str, cmd: &str) -> ProcessInfo {
+        ProcessInfo {
+            pid,
+            name: name.to_string(),
+            cmd: cmd.to_string(),
+            user: "adam".to_string(),
+            cpu_usage: 0.0,
+            gpu_usage: None,
+            memory: 0,
+            ports: Vec::new(),
+            category: crate::category::classify(name, cmd),
+            cwd: None,
+            exe: None,
+            run_time: 0,
+            thread_count: 0,
+        }
+    }
+
+    /// The column is labelled COMMAND and displays `cmd`, so the sort must order
+    /// by `cmd`. Sorting by `name` put every Node process under "node" while the
+    /// table showed "next dev", "vite" and "claude".
+    #[test]
+    fn command_sort_orders_by_cmd_not_name() {
+        let mut monitor = ProcessMonitor::new();
+        monitor.sort_mode = SortMode::Name;
+        monitor.processes = vec![
+            process_named(1, "node", "vite"),
+            process_named(2, "node", "claude"),
+            process_named(3, "alpha", "next dev"),
+        ];
+
+        monitor.sort_processes();
+
+        let order: Vec<&str> = monitor.processes.iter().map(|p| p.cmd.as_str()).collect();
+        assert_eq!(order, vec!["claude", "next dev", "vite"]);
+    }
+
+    /// The collector defaults to the COMMAND sort, which is the only mode the
+    /// dev tier groups under.
+    #[test]
+    fn command_is_the_default_sort() {
+        let monitor = ProcessMonitor::new();
+        assert!(matches!(monitor.sort_mode, SortMode::Name));
+    }
 
     fn listening_on(port: u16) -> PortInfo {
         PortInfo {
