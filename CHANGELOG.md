@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.10](https://github.com/abosnjakovic/oversee/compare/v0.3.9...v0.3.10) - 2026-09-09
+
+### Added
+
+- *(app)* search categories only with a colon prefix
+- *(ui)* mark dev processes with a category glyph
+- *(app)* group dev processes at the top under the COMMAND sort
+- *(process)* carry a dev-tool category on ProcessInfo
+- *(category)* classify processes as dev tools from argv
+
+### Fixed
+
+- *(category)* read only the tool, not its arguments
+- clear the mechanical and defect-bearing clippy findings
+- *(process)* key the port cache by process start time
+- *(process)* cache lsof ports so they stop flickering
+
+### Other
+
+- rename SortMode::Name to SortMode::Command
+- plan the dev process tier implementation
+- spec the dev process tier
+- switch tests to nextest and add watch loops
+- deny pedantic, nursery and panic-prone clippy lints
+- clear the remaining clippy findings
+- dedupe navigation arms and drop dead memory API
+- Update oversee formula to 0.3.9
+
 ## [0.3.9](https://github.com/abosnjakovic/oversee/compare/v0.3.8...v0.3.9) - 2026-08-15
 
 ### Fixed
