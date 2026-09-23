@@ -53,6 +53,8 @@ impl PowermetricsState {
 
 pub struct GpuMonitor {
     available: bool,
+    /// `powermetrics` needs root; without it utilisation never updates.
+    is_root: bool,
     /// Shared state with background thread
     state: Arc<PowermetricsState>,
     /// Handle to the background thread (for cleanup)
@@ -62,10 +64,12 @@ pub struct GpuMonitor {
 impl GpuMonitor {
     pub fn new() -> Self {
         let available = Self::is_apple_silicon();
+        // SAFETY: geteuid has no preconditions and cannot fail.
+        let is_root = unsafe { libc::geteuid() } == 0;
         let state = Arc::new(PowermetricsState::new());
 
-        // Spawn background thread for powermetrics polling if GPU is available
-        let background_thread = if available {
+        // Spawn background thread only when powermetrics can actually run
+        let background_thread = if available && is_root {
             let state_clone = Arc::clone(&state);
             Some(thread::spawn(move || {
                 Self::powermetrics_background_loop(&state_clone);
@@ -76,6 +80,7 @@ impl GpuMonitor {
 
         Self {
             available,
+            is_root,
             state,
             _background_thread: background_thread,
         }
@@ -83,6 +88,10 @@ impl GpuMonitor {
 
     pub const fn is_available(&self) -> bool {
         self.available
+    }
+
+    pub const fn is_root(&self) -> bool {
+        self.is_root
     }
 
     /// Toggle whether the background thread spawns `powermetrics`. When the GPU

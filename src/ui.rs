@@ -584,7 +584,14 @@ fn bar_items(app: &App) -> Vec<BarItem> {
         })
         .collect();
 
-    if app.is_gpu_visible() {
+    if app.is_gpu_visible() && !app.gpu_monitor.is_root() {
+        items.push(BarItem {
+            label: "GPU".to_string(),
+            frac: 0.0,
+            value: "no sudo".to_string(),
+            color: THEME.fg_faint,
+        });
+    } else if app.is_gpu_visible() {
         items.push(BarItem {
             label: "GPU".to_string(),
             frac: app.gpu_value / 100.0,
