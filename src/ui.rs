@@ -745,7 +745,7 @@ fn render_kill_confirmation(f: &mut Frame, app: &App, screen_area: Rect) {
     f.render_widget(clear_widget, dialog_area);
 
     // Create the dialog content
-    let [title_line, _, info_line, warning_line, _, options_line] = Layout::default()
+    let [title_line, _, info_line, warning_line, _, options_line, _] = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // Title
@@ -1133,5 +1133,31 @@ mod tests {
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
 
         assert_eq!(rendered, "▸ next dev");
+    }
+
+    /// Pressing K opens this dialog before any signal is sent, so a panic while
+    /// drawing it takes the whole TUI down instead of killing the target.
+    /// `Layout::areas` panics when the destructured count differs from the
+    /// constraint count, which only shows up at render time.
+    #[test]
+    fn kill_confirmation_dialog_renders_the_target() {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut app = App::new(tx);
+        app.mode = Mode::KillConfirmation;
+        app.kill_target_pid = Some(4242);
+        app.kill_target_name = "node".to_string();
+
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 40)).unwrap();
+        terminal.draw(|f| render(f, &mut app)).unwrap();
+
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(screen.contains("PID 4242 · node"));
     }
 }
