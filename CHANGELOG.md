@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.11](https://github.com/abosnjakovic/oversee/compare/v0.3.10...v0.3.11) - 2026-09-30
+
+### Added
+
+- *(gpu)* show no sudo instead of a fake 0% without root ([#18](https://github.com/abosnjakovic/oversee/pull/18))
+
+### Fixed
+
+- *(ui)* stop the kill dialog panicking on open
+
+### Other
+
+- Update oversee formula to 0.3.10
+
 ## [0.3.10](https://github.com/abosnjakovic/oversee/compare/v0.3.9...v0.3.10) - 2026-09-09
 
 ### Added
