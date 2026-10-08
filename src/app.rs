@@ -632,7 +632,7 @@ mod tests {
         assert_eq!(app.filter_input, "x", "filter mode types rather than binds");
         app.apply_event(&key(KeyCode::Esc));
         assert_eq!(app.mode, Mode::Normal);
-        assert!(app.filter_input.is_empty());
+        assert_eq!(app.filter_input, "", "esc clears the filter on the way out");
     }
 
     /// Space toggles sampling; q leaves for good. Quitting is not a pause.
@@ -787,7 +787,7 @@ mod tests {
 
         app.filter_input = ":nonsense".to_string();
         app.update_filtered_indices();
-        assert!(cmds(&app).is_empty());
+        assert_eq!(cmds(&app), Vec::<String>::new());
     }
 
     /// `tier_rank`'s early return is only reached when something is pinned AND
