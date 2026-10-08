@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.12](https://github.com/abosnjakovic/oversee/compare/v0.3.11...v0.3.12) - 2026-10-08
+
+### Added
+
+- *(app)* collapse an app's processes into one row
+
+### Fixed
+
+- *(process)* stop the unscanned-pid test racing the machine
+
+### Other
+
+- *(app)* assert_eq on empty values for clippy 1.99
+- Update oversee formula to 0.3.11
+
 ## [0.3.11](https://github.com/abosnjakovic/oversee/compare/v0.3.10...v0.3.11) - 2026-09-30
 
 ### Added
