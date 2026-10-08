@@ -407,6 +407,23 @@ struct ScannedProcess {
     ports: Vec<PortInfo>,
 }
 
+/// True when a live process has unknown ports: one the last scan never saw, or
+/// one that has taken over a pid since, which the start time gives away.
+///
+/// Takes `(pid, start_time)` pairs rather than the `System`, so the comparison
+/// can be tested without racing whatever the machine happens to spawn between
+/// two refreshes.
+fn has_unscanned(
+    live: impl Iterator<Item = (u32, u64)>,
+    last_scan: &HashMap<u32, ScannedProcess>,
+) -> bool {
+    live.into_iter().any(|(pid, start_time)| {
+        last_scan
+            .get(&pid)
+            .is_none_or(|scanned| scanned.start_time != start_time)
+    })
+}
+
 impl ProcessMonitor {
     pub fn new() -> Self {
         let mut system = System::new();
@@ -494,11 +511,13 @@ impl ProcessMonitor {
 
         // A process the last scan never saw, or one that has taken over a pid
         // since, has unknown ports. Tell the caller so it can rescan sooner.
-        let unscanned = self.system.processes().iter().any(|(pid, process)| {
-            self.last_scan
-                .get(&pid.as_u32())
-                .is_none_or(|scanned| scanned.start_time != process.start_time())
-        });
+        let unscanned = has_unscanned(
+            self.system
+                .processes()
+                .iter()
+                .map(|(pid, process)| (pid.as_u32(), process.start_time())),
+            &self.last_scan,
+        );
 
         // Hoisted out of the closure below so it borrows only this field,
         // leaving `uid_cache` free to be borrowed mutably alongside it.
@@ -799,33 +818,37 @@ mod tests {
         );
     }
 
-    /// A process the last scan never saw has unknown ports, so the caller is
-    /// told to bring the next scan forward.
+    /// A process the last scan never saw, or one that has taken over a pid
+    /// since, has unknown ports, so the caller is told to scan sooner.
+    ///
+    /// Driven off fixed pairs, not off the live process list: the machine
+    /// spawns processes between any two refreshes, which made the live version
+    /// of this test fail on CI roughly half the time.
     #[test]
     fn unscanned_pids_are_reported_to_the_caller() {
-        let mut monitor = ProcessMonitor::new();
-        assert!(
-            monitor.refresh(false, true),
-            "no scan has run yet, so every live pid is unscanned"
-        );
-
-        monitor.last_scan = monitor
-            .system
-            .processes()
-            .iter()
-            .map(|(pid, process)| {
-                (
-                    pid.as_u32(),
-                    ScannedProcess {
-                        start_time: process.start_time(),
-                        ports: Vec::new(),
-                    },
-                )
-            })
+        let scanned = |start_time| ScannedProcess {
+            start_time,
+            ports: Vec::new(),
+        };
+        let last_scan: HashMap<u32, ScannedProcess> = [(10, scanned(100)), (20, scanned(200))]
+            .into_iter()
             .collect();
+
         assert!(
-            !monitor.refresh(false, false),
+            !has_unscanned([(10, 100), (20, 200)].into_iter(), &last_scan),
             "every live pid was covered by the last scan"
+        );
+        assert!(
+            has_unscanned([(10, 100), (30, 300)].into_iter(), &last_scan),
+            "pid 30 started after the scan, so its ports are unknown"
+        );
+        assert!(
+            has_unscanned([(10, 999)].into_iter(), &last_scan),
+            "pid 10 was recycled, so it inherits nothing from the scan"
+        );
+        assert!(
+            has_unscanned([(10, 100)].into_iter(), &HashMap::new()),
+            "no scan has run yet, so every live pid is unscanned"
         );
     }
 }
