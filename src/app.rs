@@ -1,7 +1,9 @@
 use crate::category::Category;
 use crate::gpu::GpuMonitor;
 use crate::memory::MemoryInfo;
-use crate::process::{ProcessDetails, ProcessInfo, SortMode, fetch_process_details};
+use crate::process::{
+    ProcessDetails, ProcessInfo, SortMode, fetch_process_details, group_key, group_processes,
+};
 use crate::{DataCommand, DataUpdate};
 use crossterm::event::{self, Event, KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
@@ -51,7 +53,7 @@ pub struct App {
     pub run_state: RunState,
     pub filter_input: String,
     pub filtered_indices: Vec<usize>,
-    pub kill_target_pid: Option<u32>,
+    pub kill_target_pids: Vec<u32>,
     pub kill_target_name: String,
     pub mode: Mode,
     /// Set on terminal resize; main loop must clear the terminal before the
@@ -61,6 +63,12 @@ pub struct App {
     pub needs_clear: bool,
     pub pinned_pids: HashSet<u32>,
     sort_mode: SortMode,
+    /// Collapse each app's processes into one row. On by default: a browser
+    /// with sixteen helpers otherwise fills the whole table with itself.
+    grouped: bool,
+    /// `processes` collapsed by app. Rebuilt when the processes, the sort mode
+    /// or the toggle change, never per frame.
+    groups: Vec<ProcessInfo>,
 
     // Breakout / details panel state
     pub expanded_pid: Option<u32>,
@@ -118,11 +126,13 @@ impl App {
             mode: Mode::Normal,
             filter_input: String::new(),
             filtered_indices: Vec::new(),
-            kill_target_pid: None,
+            kill_target_pids: Vec::new(),
             kill_target_name: String::new(),
             needs_clear: false,
             pinned_pids: HashSet::new(),
             sort_mode: SortMode::Command,
+            grouped: true,
+            groups: Vec::new(),
 
             expanded_pid: None,
             selected_details: None,
@@ -164,12 +174,12 @@ impl App {
                 }
                 DataUpdate::Processes { processes } => {
                     self.processes = processes;
-                    self.update_filtered_indices();
+                    self.rebuild_groups();
 
                     // Reset selection if out of bounds
-                    let process_count = self.processes.len();
-                    if self.selected_process >= process_count && process_count > 0 {
-                        self.selected_process = process_count.saturating_sub(1);
+                    let row_count = self.rows().len();
+                    if self.selected_process >= row_count && row_count > 0 {
+                        self.selected_process = row_count.saturating_sub(1);
                     }
 
                     // Clear breakout if expanded process exited
@@ -254,16 +264,13 @@ impl App {
     fn handle_kill_confirmation_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Char('y' | 'Y') => {
-                if let Some(pid) = self.kill_target_pid {
-                    Self::kill_process(pid);
-                }
+                Self::kill_processes(std::mem::take(&mut self.kill_target_pids));
                 self.mode = Mode::Normal;
-                self.kill_target_pid = None;
                 self.kill_target_name.clear();
             }
             KeyCode::Char('n' | 'N') | KeyCode::Esc => {
                 self.mode = Mode::Normal;
-                self.kill_target_pid = None;
+                self.kill_target_pids.clear();
                 self.kill_target_name.clear();
             }
             _ => {}
@@ -342,7 +349,16 @@ impl App {
             }
             KeyCode::Char('s') => {
                 self.sort_mode = self.sort_mode.next();
+                self.rebuild_groups();
                 let _ = self.command_tx.send(DataCommand::ChangeSortMode);
+            }
+            KeyCode::Char('t') => {
+                self.grouped = !self.grouped;
+                self.rebuild_groups();
+                // The row set is entirely different; an index into the old one
+                // points at an unrelated process.
+                self.selected_process = 0;
+                self.table_state.select(Some(0));
             }
             KeyCode::Char('v') => {
                 self.gpu_visible = !self.gpu_visible;
@@ -351,13 +367,13 @@ impl App {
                     .send(DataCommand::SetGpuActive(self.gpu_visible));
             }
             KeyCode::Char('K') => {
-                let processes = self.get_filtered_processes();
-                if let Some((pid, name)) = processes
+                let target = self
+                    .get_filtered_processes()
                     .get(self.selected_process)
-                    .map(|p| (p.pid, p.name.clone()))
-                {
+                    .map(|p| (self.row_pids(p), p.name.clone()));
+                if let Some((pids, name)) = target {
                     self.mode = Mode::KillConfirmation;
-                    self.kill_target_pid = Some(pid);
+                    self.kill_target_pids = pids;
                     self.kill_target_name = name;
                 }
             }
@@ -426,19 +442,72 @@ impl App {
         self.sort_mode
     }
 
-    fn kill_process(pid: u32) {
-        let pid = i32::try_from(pid).unwrap_or(i32::MAX);
+    pub const fn is_grouped(&self) -> bool {
+        self.grouped
+    }
+
+    /// The rows the table shows: one per app, or one per process.
+    fn rows(&self) -> &[ProcessInfo] {
+        if self.grouped {
+            &self.groups
+        } else {
+            &self.processes
+        }
+    }
+
+    /// Rebuild the grouped view from the current processes and sort mode. The
+    /// filter indexes into whichever list is showing, so it is rebuilt too.
+    fn rebuild_groups(&mut self) {
+        self.groups = if self.grouped {
+            group_processes(&self.processes, self.sort_mode)
+        } else {
+            Vec::new()
+        };
+        self.update_filtered_indices();
+    }
+
+    /// Every pid a row stands for: one process, or all of a group's members.
+    /// Killing a group row must reach the helpers, not just the leader.
+    ///
+    /// Keyed off the leader's own entry, never off the row: a group row's
+    /// command has been rewritten to the app name, and sysinfo leaves `exe`
+    /// empty for other users' processes, so the row alone can no longer say
+    /// which bundle it came from.
+    fn row_pids(&self, row: &ProcessInfo) -> Vec<u32> {
+        let leader = self.processes.iter().find(|p| p.pid == row.pid);
+        let Some(key) = leader.filter(|_| self.grouped).map(group_key) else {
+            return vec![row.pid];
+        };
+        self.processes
+            .iter()
+            .filter(|p| group_key(p) == key)
+            .map(|p| p.pid)
+            .collect()
+    }
+
+    fn kill_processes(pids: Vec<u32>) {
+        if pids.is_empty() {
+            return;
+        }
+        let pids: Vec<i32> = pids
+            .into_iter()
+            .map(|pid| i32::try_from(pid).unwrap_or(i32::MAX))
+            .collect();
         std::thread::spawn(move || {
-            unsafe {
-                // Send SIGTERM first to allow graceful shutdown
-                libc::kill(pid, libc::SIGTERM);
+            for &pid in &pids {
+                unsafe {
+                    // Send SIGTERM first to allow graceful shutdown
+                    libc::kill(pid, libc::SIGTERM);
+                }
             }
             // Wait briefly, then escalate to SIGKILL if still alive
             std::thread::sleep(std::time::Duration::from_secs(2));
-            unsafe {
-                // kill() with signal 0 checks if process exists without sending a signal
-                if libc::kill(pid, 0) == 0 {
-                    libc::kill(pid, libc::SIGKILL);
+            for &pid in &pids {
+                unsafe {
+                    // kill() with signal 0 checks if process exists without sending a signal
+                    if libc::kill(pid, 0) == 0 {
+                        libc::kill(pid, libc::SIGKILL);
+                    }
                 }
             }
         });
@@ -449,13 +518,14 @@ impl App {
             self.filtered_indices.clear();
         } else {
             let filter_lower = self.filter_input.to_lowercase();
-            self.filtered_indices = self
-                .processes
+            let matched: Vec<usize> = self
+                .rows()
                 .iter()
                 .enumerate()
                 .filter(|(_, proc)| Self::matches_filter(proc, &filter_lower))
                 .map(|(i, _)| i)
                 .collect();
+            self.filtered_indices = matched;
         }
 
         if !self.filtered_indices.is_empty() && self.selected_process >= self.filtered_indices.len()
@@ -493,11 +563,11 @@ impl App {
             if self.filtered_indices.is_empty() && !self.filter_input.is_empty() {
                 Vec::new()
             } else if self.filtered_indices.is_empty() {
-                self.processes.iter().collect()
+                self.rows().iter().collect()
             } else {
                 self.filtered_indices
                     .iter()
-                    .filter_map(|&i| self.processes.get(i))
+                    .filter_map(|&i| self.rows().get(i))
                     .collect()
             };
 
@@ -604,6 +674,7 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let mut app = App::new(tx);
         app.processes = processes;
+        app.rebuild_groups();
         app
     }
 
@@ -746,5 +817,38 @@ mod tests {
         let (tx, _rx) = mpsc::channel();
         let app = App::new(tx);
         assert!(matches!(app.get_sort_mode(), SortMode::Command));
+    }
+
+    fn helper(pid: u32, binary: &str) -> ProcessInfo {
+        let mut proc = dev_process(pid, binary);
+        // No exe: sysinfo supplies none for most macOS processes, so the
+        // bundle is only visible in the command line.
+        proc.cmd = format!("/Applications/Brave Browser.app/Contents/MacOS/{binary}");
+        proc
+    }
+
+    /// K on a group row must reach every helper. The row cannot be asked which
+    /// app it is — its command has been rewritten to `Brave Browser (3)` — so
+    /// the pids come from the leader's own entry.
+    #[test]
+    fn killing_a_group_targets_every_member() {
+        let mut app = app_with(vec![
+            helper(2751, "Brave Browser"),
+            helper(2753, "Brave Browser Helper"),
+            helper(7667, "Brave Browser Helper (GPU)"),
+            dev_process(55826, "fish"),
+        ]);
+
+        app.apply_event(&key(KeyCode::Char('K')));
+        assert_eq!(app.kill_target_pids, vec![2751, 2753, 7667]);
+
+        app.apply_event(&key(KeyCode::Char('n')));
+        app.apply_event(&key(KeyCode::Char('t')));
+        app.apply_event(&key(KeyCode::Char('K')));
+        assert_eq!(
+            app.kill_target_pids,
+            vec![2751],
+            "ungrouped, K kills exactly the one process on the row"
+        );
     }
 }

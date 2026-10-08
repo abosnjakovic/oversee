@@ -105,8 +105,9 @@ Without sudo, GPU metrics will show 0% (requires access to powermetrics).
 - `Page Up/Down`, `Home/End`: Navigate by 10 / to first or last
 - `Enter`: Pin/unpin the selected process (shows its full command)
 - `s`: Cycle through sort modes
+- `t`: Group/ungroup an app's processes (on by default)
 - `v`: Toggle the GPU bar
-- `K`: Kill the selected process (with confirmation)
+- `K`: Kill the selected process — every process in the group when grouped (with confirmation)
 - `?`: Toggle the help popup
 
 ### Filtering Processes
@@ -114,6 +115,12 @@ Without sudo, GPU metrics will show 0% (requires access to powermetrics).
 2. Type to filter by process name, port, or username
 3. `Enter` to apply filter, `ESC` to cancel
 4. Navigation works within filtered results
+
+### Grouping
+One `.app` is one row: Brave's 25 helpers collapse into `Brave Browser (25)` with
+their CPU, memory, threads and ports summed, so the MEM sort ranks apps by what
+they actually cost. Unbundled processes keep their full command line. Press `t`
+for the flat per-process list.
 
 
 ## Architecture

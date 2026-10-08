@@ -457,6 +457,12 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
             all_processes.len(),
             app.filter_input
         )
+    } else if app.is_grouped() {
+        format!(
+            "processes ({} apps · {} total)",
+            processes.len(),
+            all_processes.len()
+        )
     } else {
         format!("processes ({} total)", all_processes.len())
     };
@@ -499,9 +505,9 @@ fn render_process_list(f: &mut Frame, app: &mut App, area: Rect) {
     } else if app.mode == Mode::Filter {
         "type to filter · enter apply · esc cancel"
     } else if app.is_paused() {
-        "[paused] space resume · q quit · ↑↓ nav · enter pin · K kill · s sort · / filter · g/G top/bot · ? help"
+        "[paused] space resume · q quit · ↑↓ nav · enter pin · K kill · s sort · t group · / filter · ? help"
     } else {
-        "space pause · q quit · ↑↓ nav · enter pin · K kill · s sort · / filter · g/G top/bot · ? help"
+        "space pause · q quit · ↑↓ nav · enter pin · K kill · s sort · t group · / filter · g/G top/bot · ? help"
     };
 
     let help_style = if app.mode == Mode::KillConfirmation {
@@ -777,10 +783,11 @@ fn render_kill_confirmation(f: &mut Frame, app: &App, screen_area: Rect) {
     f.render_widget(title, title_line);
 
     // Process information
-    let process_info = app.kill_target_pid.map_or_else(
-        || "unknown process".to_string(),
-        |pid| format!("PID {} · {}", pid, app.kill_target_name),
-    );
+    let process_info = match app.kill_target_pids.as_slice() {
+        [] => "unknown process".to_string(),
+        [pid] => format!("PID {} · {}", pid, app.kill_target_name),
+        pids => format!("{} processes · {}", pids.len(), app.kill_target_name),
+    };
     let process_text = Paragraph::new(process_info)
         .alignment(ratatui::layout::Alignment::Center)
         .style(Style::default().fg(THEME.fg));
@@ -843,6 +850,7 @@ fn help_keybind_lines() -> Vec<Line<'static>> {
         Line::from("  Space         Pause/Resume monitoring"),
         Line::from("  Enter         Pin/Unpin process (shows full command)"),
         Line::from("  s             Cycle through sort modes"),
+        Line::from("  t             Group/ungroup an app's processes into one row"),
         Line::from("  v             Toggle GPU bar"),
         Line::from("  K             Kill selected process (with confirmation)"),
         Line::from("  /             Enter filter mode"),
@@ -1144,7 +1152,7 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let mut app = App::new(tx);
         app.mode = Mode::KillConfirmation;
-        app.kill_target_pid = Some(4242);
+        app.kill_target_pids = vec![4242];
         app.kill_target_name = "node".to_string();
 
         let mut terminal =

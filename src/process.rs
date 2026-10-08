@@ -1,4 +1,5 @@
 use crate::category::{Category, classify};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ffi::CStr;
 #[cfg(feature = "profile")]
@@ -156,6 +157,82 @@ impl SortMode {
             Self::Pid => Self::Cpu,
         }
     }
+
+    /// Order two processes under this mode. Shared by the flat list and the
+    /// grouped list so both rank alike; pid breaks ties, which keeps the many
+    /// idle processes from shuffling between refreshes.
+    pub fn compare(self, a: &ProcessInfo, b: &ProcessInfo) -> Ordering {
+        match self {
+            // total_cmp, not partial_cmp: a NaN cpu_usage would panic on unwrap.
+            Self::Cpu => b.cpu_usage.total_cmp(&a.cpu_usage).then(a.pid.cmp(&b.pid)),
+            Self::Memory => b.memory.cmp(&a.memory).then(a.pid.cmp(&b.pid)),
+            Self::Command => a.cmd.cmp(&b.cmd).then(a.pid.cmp(&b.pid)),
+            Self::Pid => a.pid.cmp(&b.pid),
+        }
+    }
+}
+
+/// Which app a process belongs to: the `.app` bundle root for a macOS bundle,
+/// otherwise the process name. Brave's renderer helpers all live under
+/// `/Applications/Brave Browser.app`, so they key to the browser itself.
+pub fn group_key(proc: &ProcessInfo) -> &str {
+    let path = proc.exe.as_deref().unwrap_or(&proc.cmd);
+    path.split_once(".app/")
+        .map_or(proc.name.as_str(), |(bundle, _)| bundle)
+}
+
+/// Collapse each app's processes into one row — summed CPU, memory, threads
+/// and ports, with the member count after the name.
+///
+/// A bundled app is named by its bundle (`Brave Browser`), not by the path of
+/// whichever helper leads it: one `.app` is one row, and the COMMAND sort then
+/// reads as an app list. Anything unbundled keeps its command line, which is
+/// the only thing that tells `vite` from `claude`. Sorted here because the sums
+/// re-rank the table: Brave's several GB spread over sixteen helpers belongs
+/// where that much memory belongs, not where its lowest-pid helper sat.
+pub fn group_processes(processes: &[ProcessInfo], sort_mode: SortMode) -> Vec<ProcessInfo> {
+    let mut groups: HashMap<&str, Vec<&ProcessInfo>> = HashMap::new();
+    for proc in processes {
+        groups.entry(group_key(proc)).or_default().push(proc);
+    }
+
+    let mut rows: Vec<ProcessInfo> = groups
+        .into_iter()
+        .filter_map(|(key, members)| {
+            // Lowest pid: the app itself, started before the helpers it spawned.
+            let leader = members.iter().copied().min_by_key(|p| p.pid)?;
+            let bundled = key != leader.name;
+            if members.len() == 1 && !bundled {
+                return Some(leader.clone());
+            }
+
+            let mut row = leader.clone();
+            let app = key.rsplit('/').next().unwrap_or(key);
+            row.cmd = if members.len() == 1 {
+                app.to_string()
+            } else {
+                format!("{app} ({})", members.len())
+            };
+            row.cpu_usage = members.iter().map(|p| p.cpu_usage).sum();
+            row.memory = members
+                .iter()
+                .fold(0, |sum, p| sum.saturating_add(p.memory));
+            row.thread_count = members
+                .iter()
+                .fold(0, |sum, p| sum.saturating_add(p.thread_count));
+            row.ports = members
+                .iter()
+                .flat_map(|p| p.ports.iter().cloned())
+                .collect();
+            row.category = row
+                .category
+                .or_else(|| members.iter().find_map(|p| p.category));
+            Some(row)
+        })
+        .collect();
+
+    rows.sort_by(|a, b| sort_mode.compare(a, b));
+    rows
 }
 
 impl Protocol {
@@ -520,22 +597,8 @@ impl ProcessMonitor {
     }
 
     fn sort_processes(&mut self) {
-        match self.sort_mode {
-            SortMode::Cpu => {
-                // total_cmp, not partial_cmp: a NaN cpu_usage would panic on unwrap.
-                self.processes
-                    .sort_by(|a, b| b.cpu_usage.total_cmp(&a.cpu_usage));
-            }
-            SortMode::Memory => {
-                self.processes.sort_by_key(|p| std::cmp::Reverse(p.memory));
-            }
-            SortMode::Command => {
-                self.processes.sort_by(|a, b| a.cmd.cmp(&b.cmd));
-            }
-            SortMode::Pid => {
-                self.processes.sort_by_key(|p| p.pid);
-            }
-        }
+        let sort_mode = self.sort_mode;
+        self.processes.sort_by(|a, b| sort_mode.compare(a, b));
     }
 
     pub fn get_processes(&self) -> &[ProcessInfo] {
@@ -634,6 +697,33 @@ mod tests {
     fn command_is_the_default_sort() {
         let monitor = ProcessMonitor::new();
         assert!(matches!(monitor.sort_mode, SortMode::Command));
+    }
+
+    /// sysinfo leaves `exe` empty for most processes on macOS, so the bundle
+    /// has to be read out of the command line — as it is in the real table.
+    fn bundled(pid: u32, bundle: &str, binary: &str, memory: u64) -> ProcessInfo {
+        let cmd = format!("/Applications/{bundle}.app/Contents/MacOS/{binary} --type=renderer");
+        let mut proc = process_named(pid, binary, &cmd);
+        proc.memory = memory;
+        proc
+    }
+
+    /// Twenty-five Brave helpers filled the whole table while hiding what the
+    /// browser actually costs. One row, one total, member count in the command.
+    #[test]
+    fn helpers_collapse_into_one_row_per_app() {
+        let processes = vec![
+            bundled(2753, "Brave Browser", "Brave Browser Helper", 400),
+            bundled(2751, "Brave Browser", "Brave Browser", 500),
+            bundled(7667, "Brave Browser", "Brave Browser Helper (GPU)", 100),
+            process_named(55826, "fish", "fish -l"),
+        ];
+
+        let rows = group_processes(&processes, SortMode::Memory);
+
+        let shown: Vec<(&str, u64)> = rows.iter().map(|p| (p.cmd.as_str(), p.memory)).collect();
+        assert_eq!(shown, vec![("Brave Browser (3)", 1000), ("fish -l", 0)]);
+        assert_eq!(rows.first().map(|p| p.pid), Some(2751), "leader is the app");
     }
 
     fn listening_on(port: u16) -> PortInfo {
